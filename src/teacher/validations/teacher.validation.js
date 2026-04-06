@@ -142,4 +142,11 @@ export const teacherValidation = {
     scope: Joi.string().trim().uppercase().valid("CLASS", "SELECTED").default("CLASS"),
     studentId: optionalIdSchema.optional(),
   }),
+
+  predictionReportsQuery: Joi.object({
+    classId: optionalIdSchema.optional(),
+    scope: Joi.string().trim().uppercase().valid("CLASS", "SELECTED").optional(),
+    avgScoreMin: Joi.number().min(0).max(100).optional(),
+    avgScoreMax: Joi.number().min(0).max(100).optional(),
+  }),
 };

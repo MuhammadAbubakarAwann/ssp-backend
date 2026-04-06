@@ -94,6 +94,25 @@ const percentChange = (current, previous) => {
   return ((current - previous) / previous) * 100;
 };
 
+const summarizeRiskLevel = (entries) => {
+  const counts = entries.reduce((acc, entry) => {
+    const key = String(entry.riskLevel || "").toUpperCase();
+    if (!key) {
+      return acc;
+    }
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  const order = ["HIGH", "MID", "LOW"];
+  return order.reduce((winner, key) => {
+    if (!winner) {
+      return counts[key] ? key : null;
+    }
+    return counts[key] > (counts[winner] || 0) ? key : winner;
+  }, null) || null;
+};
+
 export class TeacherService {
   static isNumericId(value) {
     return /^\d+$/.test(String(value || "").trim());
@@ -605,6 +624,105 @@ export class TeacherService {
     };
   }
 
+  static async getPredictionReports(teacherId, filters = {}) {
+    const where = {
+      class: {
+        teacherId,
+      },
+    };
+
+    if (filters.scope) {
+      where.scope = String(filters.scope).trim().toUpperCase();
+    }
+
+    if (filters.classId) {
+      const classIdentifierWhere = this.buildIdentifierWhere(filters.classId);
+      where.class = {
+        teacherId,
+        ...classIdentifierWhere,
+      };
+    }
+
+    const predictionRuns = await prisma.predictionRun.findMany({
+      where,
+      orderBy: [
+        { generatedAt: "desc" },
+        { id: "desc" },
+      ],
+      include: {
+        class: {
+          select: {
+            publicId: true,
+            name: true,
+          },
+        },
+        entries: {
+          select: {
+            predictedScore: true,
+            performance: true,
+            riskLevel: true,
+          },
+        },
+      },
+    });
+
+    const reports = predictionRuns.map((run) => {
+      const summary = run.entries.reduce(
+        (acc, entry) => {
+          const perf = String(entry.performance || "").toUpperCase();
+          if (perf === "HIGH") acc.high += 1;
+          else if (perf === "AVG") acc.avg += 1;
+          else if (perf === "LOW") acc.low += 1;
+
+          acc.totalScore += Number(entry.predictedScore || 0);
+          return acc;
+        },
+        { high: 0, avg: 0, low: 0, totalScore: 0 }
+      );
+
+      const analyzedCount = run.entries.length;
+      const avgScore = analyzedCount ? summary.totalScore / analyzedCount : 0;
+
+      return {
+        reportCode: run.reportCode || run.publicId,
+        type: run.scope,
+        class: {
+          id: run.class.publicId,
+          name: run.class.name,
+        },
+        summary: {
+          high: summary.high,
+          avg: summary.avg,
+          low: summary.low,
+        },
+        riskLevel: summarizeRiskLevel(run.entries),
+        date: run.generatedAt,
+        avgScore: roundTo(avgScore),
+        studentsAnalyzed: analyzedCount,
+      };
+    });
+
+    const min = Number.isFinite(Number(filters.avgScoreMin)) ? Number(filters.avgScoreMin) : null;
+    const max = Number.isFinite(Number(filters.avgScoreMax)) ? Number(filters.avgScoreMax) : null;
+
+    const filteredReports = reports.filter((report) => {
+      if (min !== null && report.avgScore < min) {
+        return false;
+      }
+
+      if (max !== null && report.avgScore > max) {
+        return false;
+      }
+
+      return true;
+    });
+
+    return {
+      count: filteredReports.length,
+      reports: filteredReports,
+    };
+  }
+
   static async getPredictionDetails(classId, predictionId, teacherId) {
     const teacherClass = await this.assertTeacherClass(classId, teacherId);
     const predictionIdentifierWhere = this.buildIdentifierWhere(predictionId);
@@ -821,6 +939,12 @@ export class TeacherService {
         },
       });
 
+      const reportCode = `RPT-${predictionRun.id}`;
+      const updatedPredictionRun = await tx.predictionRun.update({
+        where: { id: predictionRun.id },
+        data: { reportCode },
+      });
+
       await tx.predictionEntry.createMany({
         data: entryData.map((entry) => ({
           publicId: createId(),
@@ -836,8 +960,9 @@ export class TeacherService {
 
       return {
         prediction: {
-          ...predictionRun,
-          id: predictionRun.publicId,
+          ...updatedPredictionRun,
+          id: updatedPredictionRun.publicId,
+          reportId: updatedPredictionRun.reportCode,
         },
         count: entries.length,
         entries: entries.map((entry) => ({

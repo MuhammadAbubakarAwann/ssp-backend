@@ -99,6 +99,11 @@ router.get(
   TeacherController.getPredictionMetrics
 );
 router.get(
+  "/predictions/reports",
+  validateQuery(teacherValidation.predictionReportsQuery),
+  TeacherController.getPredictionReports
+);
+router.get(
   "/predictions/history",
   validateQuery(teacherValidation.predictionHistoryQuery),
   TeacherController.getPredictionHistory

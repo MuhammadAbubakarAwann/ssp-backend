@@ -163,6 +163,24 @@ export class TeacherController {
     }
   }
 
+  static async getPredictionReports(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const filters = req.validatedQuery || req.query;
+      const data = await TeacherService.getPredictionReports(teacherId, filters);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch prediction reports",
+      });
+    }
+  }
+
   static async getPredictionDetails(req, res) {
     try {
       const teacherId = req.user.userId;
