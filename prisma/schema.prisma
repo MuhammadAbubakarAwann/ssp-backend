@@ -1,0 +1,71 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id             Int             @id @default(autoincrement())
+  email          String          @unique
+  firstName      String
+  lastName       String
+  password       String
+  role           Role            @default(STUDENT)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  teacherClasses TeacherClass[]
+}
+
+model TeacherClass {
+  id         Int             @id @default(autoincrement())
+  name       String
+  code       String?
+  section    String?
+  semester   String?
+  teacherId  Int
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+  teacher    User            @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  students   StudentRecord[]
+
+  @@index([teacherId])
+}
+
+model StudentRecord {
+  id                   Int          @id @default(autoincrement())
+  classId              Int
+  name                 String
+  regNo                String
+  quiz1                Float?
+  quiz2                Float?
+  quiz3                Float?
+  quiz4                Float?
+  quiz5                Float?
+  quiz6                Float?
+  assignment1          Float?
+  assignment2          Float?
+  assignment3          Float?
+  assignment4          Float?
+  assignment5          Float?
+  midsPercentage       Float?
+  attendancePercentage Float?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  class                TeacherClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@unique([classId, regNo])
+  @@index([classId])
+}
+
+enum Role {
+  STUDENT
+  TEACHER
+  ADMIN
+}
