@@ -34,6 +34,24 @@ const validateBody = (schema) => (req, res, next) => {
   return next();
 };
 
+const validateQuery = (schema) => (req, res, next) => {
+  const { error, value } = schema.validate(req.query, {
+    abortEarly: false,
+    stripUnknown: true,
+  });
+
+  if (error) {
+    return res.status(400).json({
+      success: false,
+      message: "Validation failed",
+      errors: error.details.map((item) => item.message),
+    });
+  }
+
+  req.validatedQuery = value;
+  return next();
+};
+
 const validateParams = (schema) => (req, res, next) => {
   const { error, value } = schema.validate(req.params, {
     abortEarly: false,
@@ -67,9 +85,35 @@ router.put(
 );
 router.post("/classes", validateBody(teacherValidation.createClass), TeacherController.createClass);
 router.get("/classes", TeacherController.getClasses);
+router.get("/classes/names", TeacherController.getClassNames);
 router.get("/classes/:classId", validateParams(teacherValidation.classIdParam), TeacherController.getClassDetails);
 router.delete("/classes/:classId", validateParams(teacherValidation.classIdParam), TeacherController.deleteClass);
 router.get("/classes/:classId/students", validateParams(teacherValidation.classIdParam), TeacherController.getClassStudents);
+router.get(
+  "/classes/:classId/students/prediction-status",
+  validateParams(teacherValidation.classIdParam),
+  TeacherController.getClassStudentsPredictionStatus
+);
+router.get(
+  "/predictions/metrics",
+  TeacherController.getPredictionMetrics
+);
+router.get(
+  "/predictions/history",
+  validateQuery(teacherValidation.predictionHistoryQuery),
+  TeacherController.getPredictionHistory
+);
+router.get(
+  "/classes/:classId/predictions/:predictionId",
+  validateParams(teacherValidation.classPredictionParams),
+  TeacherController.getPredictionDetails
+);
+router.post(
+  "/classes/:classId/predictions",
+  validateParams(teacherValidation.classIdParam),
+  validateBody(teacherValidation.predictionSave),
+  TeacherController.savePrediction
+);
 router.post(
   "/classes/:classId/students",
   validateParams(teacherValidation.classIdParam),

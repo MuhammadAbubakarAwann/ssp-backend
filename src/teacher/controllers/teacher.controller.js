@@ -26,7 +26,7 @@ export class TeacherController {
   static async updateClassWithStudents(req, res) {
     try {
       const teacherId = req.user.userId;
-      const classId = Number(req.params.classId);
+      const classId = req.params.classId;
       const result = await TeacherService.updateClassWithStudents(
         classId,
         req.body.class,
@@ -82,10 +82,133 @@ export class TeacherController {
     }
   }
 
+  static async getClassNames(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const classes = await TeacherService.getClassNames(teacherId);
+
+      return res.status(200).json({
+        success: true,
+        data: { classes },
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch class names",
+      });
+    }
+  }
+
+  static async getClassStudentsPredictionStatus(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const classId = req.params.classId;
+
+      if (classId === "0") {
+        return res.status(200).json({
+          success: true,
+          data: {
+            class: null,
+            students: [],
+          },
+        });
+      }
+
+      const data = await TeacherService.getClassStudentsPredictionStatus(classId, teacherId);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch class students prediction status",
+      });
+    }
+  }
+
+  static async getPredictionHistory(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const filters = req.validatedQuery || req.query;
+      const data = await TeacherService.getPredictionHistory(teacherId, filters);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch prediction history",
+      });
+    }
+  }
+
+  static async getPredictionMetrics(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const data = await TeacherService.getPredictionMetrics(teacherId);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch prediction metrics",
+      });
+    }
+  }
+
+  static async getPredictionDetails(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const classId = req.params.classId;
+      const predictionId = req.params.predictionId;
+
+      if (classId === "0") {
+        return res.status(200).json({
+          success: true,
+          data: {
+            class: null,
+            prediction: null,
+            students: [],
+          },
+        });
+      }
+
+      const data = await TeacherService.getPredictionDetails(classId, predictionId, teacherId);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch prediction details",
+      });
+    }
+  }
+
   static async getClassDetails(req, res) {
     try {
       const teacherId = req.user.userId;
-      const classId = Number(req.params.classId);
+      const classId = req.params.classId;
+
+      if (classId === "0") {
+        return res.status(200).json({
+          success: true,
+          data: {
+            class: null,
+            students: [],
+          },
+        });
+      }
+
       const classData = await TeacherService.getClassDetails(classId, teacherId);
 
       return res.status(200).json({
@@ -103,7 +226,7 @@ export class TeacherController {
   static async addStudent(req, res) {
     try {
       const teacherId = req.user.userId;
-      const classId = Number(req.params.classId);
+      const classId = req.params.classId;
       const student = await TeacherService.upsertStudent(classId, teacherId, req.body);
 
       return res.status(201).json({
@@ -122,7 +245,7 @@ export class TeacherController {
   static async addStudentsBulk(req, res) {
     try {
       const teacherId = req.user.userId;
-      const classId = Number(req.params.classId);
+      const classId = req.params.classId;
       const students = await TeacherService.bulkUpsertStudents(classId, teacherId, req.body.students);
 
       return res.status(201).json({
@@ -148,7 +271,7 @@ export class TeacherController {
       }
 
       const teacherId = req.user.userId;
-      const classId = Number(req.params.classId);
+      const classId = req.params.classId;
       const result = await TeacherService.importStudentsFromExcel(classId, teacherId, req.file.buffer);
 
       return res.status(201).json({
@@ -167,7 +290,15 @@ export class TeacherController {
   static async getClassStudents(req, res) {
     try {
       const teacherId = req.user.userId;
-      const classId = Number(req.params.classId);
+      const classId = req.params.classId;
+
+      if (classId === "0") {
+        return res.status(200).json({
+          success: true,
+          data: { students: [] },
+        });
+      }
+
       const students = await TeacherService.getClassStudents(classId, teacherId);
 
       return res.status(200).json({
@@ -185,7 +316,7 @@ export class TeacherController {
   static async deleteClass(req, res) {
     try {
       const teacherId = req.user.userId;
-      const classId = Number(req.params.classId);
+      const classId = req.params.classId;
       const result = await TeacherService.deleteClass(classId, teacherId);
 
       return res.status(200).json({
@@ -197,6 +328,24 @@ export class TeacherController {
       return res.status(400).json({
         success: false,
         message: error instanceof Error ? error.message : "Failed to delete class",
+      });
+    }
+  }
+  static async savePrediction(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const classId = req.params.classId;
+      const result = await TeacherService.savePredictionRun(classId, teacherId, req.body);
+
+      return res.status(201).json({
+        success: true,
+        message: "Prediction saved successfully",
+        data: result,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to save prediction",
       });
     }
   }

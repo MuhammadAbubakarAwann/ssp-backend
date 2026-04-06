@@ -13,6 +13,7 @@ datasource db {
 
 model User {
   id             Int             @id @default(autoincrement())
+  publicId       String          @unique @default(cuid())
   email          String          @unique
   firstName      String
   lastName       String
@@ -24,22 +25,25 @@ model User {
 }
 
 model TeacherClass {
-  id         Int             @id @default(autoincrement())
-  name       String
-  code       String?
-  section    String?
-  semester   String?
-  teacherId  Int
-  createdAt  DateTime        @default(now())
-  updatedAt  DateTime        @updatedAt
-  teacher    User            @relation(fields: [teacherId], references: [id], onDelete: Cascade)
-  students   StudentRecord[]
+  id          Int             @id @default(autoincrement())
+  publicId    String          @unique @default(cuid())
+  name        String
+  code        String?
+  section     String?
+  semester    String?
+  teacherId   Int
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  teacher     User            @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  students    StudentRecord[]
+  predictions PredictionRun[]
 
   @@index([teacherId])
 }
 
 model StudentRecord {
-  id                   Int          @id @default(autoincrement())
+  id                   Int               @id @default(autoincrement())
+  publicId             String            @unique @default(cuid())
   classId              Int
   name                 String
   regNo                String
@@ -56,16 +60,74 @@ model StudentRecord {
   assignment5          Float?
   midsPercentage       Float?
   attendancePercentage Float?
-  createdAt            DateTime     @default(now())
-  updatedAt            DateTime     @updatedAt
-  class                TeacherClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  class                TeacherClass      @relation(fields: [classId], references: [id], onDelete: Cascade)
+  predictionEntries    PredictionEntry[]
 
   @@unique([classId, regNo])
   @@index([classId])
+}
+
+model PredictionRun {
+  id          Int             @id @default(autoincrement())
+  publicId    String          @unique @default(cuid())
+  classId     Int
+  title       String
+  scope       PredictionScope
+  generatedAt DateTime        @default(now())
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  class       TeacherClass    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  entries     PredictionEntry[]
+
+  @@index([classId])
+}
+
+model PredictionEntry {
+  id              Int              @id @default(autoincrement())
+  publicId        String           @unique @default(cuid())
+  predictionRunId Int
+  studentRecordId Int?
+  studentName     String
+  regNo           String
+  predictedScore  Float
+  performance     PerformanceLevel
+  passProbability Float
+  modelConfidence Float
+  riskLevel       RiskLevel
+  suggestions     Json
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  predictionRun   PredictionRun    @relation(fields: [predictionRunId], references: [id], onDelete: Cascade)
+  studentRecord   StudentRecord?   @relation(fields: [studentRecordId], references: [id], onDelete: SetNull)
+
+  @@unique([predictionRunId, regNo])
+  @@index([predictionRunId])
+  @@index([studentRecordId])
 }
 
 enum Role {
   STUDENT
   TEACHER
   ADMIN
+}
+
+enum PredictionScope {
+  CLASS
+  SELECTED
+}
+
+enum PerformanceLevel {
+  LOW
+  AVG
+  HIGH
+}
+
+enum RiskLevel {
+  LOW
+  MID
+  HIGH
 }
