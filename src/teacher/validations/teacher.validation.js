@@ -14,7 +14,7 @@ const optionalIdSchema = Joi.alternatives().try(
 export const teacherValidation = {
   createClass: Joi.object({
     name: Joi.string().trim().min(1).max(150).required(),
-    code: Joi.string().trim().max(50).allow(null, ""),
+    subject: Joi.string().trim().max(50).allow(null, ""),
     section: Joi.string().trim().max(50).allow(null, ""),
     semester: Joi.string().trim().max(50).allow(null, ""),
   }),
@@ -26,6 +26,20 @@ export const teacherValidation = {
   classPredictionParams: Joi.object({
     classId: idSchema,
     predictionId: idSchema,
+  }),
+
+  classStudentPredictionComparisonParams: Joi.object({
+    classId: idSchema,
+    studentId: idSchema,
+  }),
+
+  studentIdParam: Joi.object({
+    studentId: idSchema,
+  }),
+
+  predictionStudentParams: Joi.object({
+    predictionId: idSchema,
+    studentId: idSchema,
   }),
 
   studentRow: Joi.object({
@@ -69,7 +83,7 @@ export const teacherValidation = {
   createClassWithStudents: Joi.object({
     class: Joi.object({
       name: Joi.string().trim().min(1).max(150).required(),
-      code: Joi.string().trim().max(50).allow(null, ""),
+      subject: Joi.string().trim().max(50).allow(null, ""),
       section: Joi.string().trim().max(50).allow(null, ""),
       semester: Joi.string().trim().max(50).allow(null, ""),
     }).required(),
@@ -95,7 +109,7 @@ export const teacherValidation = {
   updateClassWithStudents: Joi.object({
     class: Joi.object({
       name: Joi.string().trim().min(1).max(150).optional(),
-      code: Joi.string().trim().max(50).allow(null, "").optional(),
+      subject: Joi.string().trim().max(50).allow(null, "").optional(),
       section: Joi.string().trim().max(50).allow(null, "").optional(),
       semester: Joi.string().trim().max(50).allow(null, "").optional(),
     }).required(),

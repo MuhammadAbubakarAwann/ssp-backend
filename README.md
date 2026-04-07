@@ -77,7 +77,7 @@ Base path: ` /api/teacher `
 ```json
 {
   "name": "BSCS-6A",
-  "code": "CS-601",
+  "subject": "CS-601",
   "section": "A",
   "semester": "Spring 2026"
 }

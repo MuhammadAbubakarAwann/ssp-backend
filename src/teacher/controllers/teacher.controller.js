@@ -181,6 +181,42 @@ export class TeacherController {
     }
   }
 
+  static async getStudentPredictions(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const studentId = req.params.studentId;
+      const data = await TeacherService.getStudentPredictions(studentId, teacherId);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch student predictions",
+      });
+    }
+  }
+
+  static async getStudentPredictionDetails(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const { predictionId, studentId } = req.params;
+      const data = await TeacherService.getStudentPredictionDetails(predictionId, studentId, teacherId);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch student prediction details",
+      });
+    }
+  }
+
   static async getPredictionDetails(req, res) {
     try {
       const teacherId = req.user.userId;

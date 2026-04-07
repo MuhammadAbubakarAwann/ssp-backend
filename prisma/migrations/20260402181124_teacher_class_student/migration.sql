@@ -2,7 +2,7 @@
 CREATE TABLE "TeacherClass" (
     "id" SERIAL NOT NULL,
     "name" TEXT NOT NULL,
-    "code" TEXT,
+    "subject" TEXT,
     "section" TEXT,
     "semester" TEXT,
     "teacherId" INTEGER NOT NULL,

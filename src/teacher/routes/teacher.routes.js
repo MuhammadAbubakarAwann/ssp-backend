@@ -104,6 +104,16 @@ router.get(
   TeacherController.getPredictionReports
 );
 router.get(
+  "/students/:studentId/predictions",
+  validateParams(teacherValidation.studentIdParam),
+  TeacherController.getStudentPredictions
+);
+router.get(
+  "/predictions/:predictionId/students/:studentId",
+  validateParams(teacherValidation.predictionStudentParams),
+  TeacherController.getStudentPredictionDetails
+);
+router.get(
   "/predictions/history",
   validateQuery(teacherValidation.predictionHistoryQuery),
   TeacherController.getPredictionHistory

@@ -113,6 +113,43 @@ const summarizeRiskLevel = (entries) => {
   }, null) || null;
 };
 
+const formatRelativePredictionLabel = (date, isLatest = false) => {
+  const now = new Date();
+  const target = new Date(date);
+  const diffMs = Math.max(0, now.getTime() - target.getTime());
+  const minuteMs = 60 * 1000;
+  const hourMs = 60 * minuteMs;
+  const dayMs = 24 * hourMs;
+  const weekMs = 7 * dayMs;
+  const monthMs = 30 * dayMs;
+  const yearMs = 365 * dayMs;
+
+  let relative = "Just now";
+  if (diffMs < minuteMs) {
+    relative = "Just now";
+  } else if (diffMs < hourMs) {
+    const minutes = Math.floor(diffMs / minuteMs);
+    relative = `${minutes} min${minutes === 1 ? "" : "s"} ago`;
+  } else if (diffMs < dayMs) {
+    const hours = Math.floor(diffMs / hourMs);
+    relative = `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  } else if (diffMs < weekMs) {
+    const days = Math.floor(diffMs / dayMs);
+    relative = `${days} day${days === 1 ? "" : "s"} ago`;
+  } else if (diffMs < monthMs) {
+    const weeks = Math.floor(diffMs / weekMs);
+    relative = `${weeks} week${weeks === 1 ? "" : "s"} ago`;
+  } else if (diffMs < yearMs) {
+    const months = Math.floor(diffMs / monthMs);
+    relative = `${months} month${months === 1 ? "" : "s"} ago`;
+  } else {
+    const years = Math.floor(diffMs / yearMs);
+    relative = `${years} year${years === 1 ? "" : "s"} ago`;
+  }
+
+  return isLatest ? `Latest (${relative})` : relative;
+};
+
 export class TeacherService {
   static isNumericId(value) {
     return /^\d+$/.test(String(value || "").trim());
@@ -154,7 +191,7 @@ export class TeacherService {
         data: {
           publicId: createId(),
           name: classData.name,
-          code: classData.code || null,
+          subject: classData.subject || null,
           section: classData.section || null,
           semester: classData.semester || null,
           teacherId,
@@ -240,7 +277,7 @@ export class TeacherService {
       data: {
         publicId: createId(),
         name: data.name,
-        code: data.code || null,
+        subject: data.subject || null,
         section: data.section || null,
         semester: data.semester || null,
         teacherId,
@@ -271,7 +308,7 @@ export class TeacherService {
     return classes.map((teacherClass) => ({
       id: teacherClass.publicId,
       name: teacherClass.name,
-      code: teacherClass.code,
+      subject: teacherClass.subject,
       section: teacherClass.section,
       semester: teacherClass.semester,
       teacherId: teacherClass.teacherId,
@@ -311,6 +348,7 @@ export class TeacherService {
       orderBy: { regNo: "asc" },
       select: {
         id: true,
+        publicId: true,
         name: true,
         regNo: true,
         _count: {
@@ -326,6 +364,8 @@ export class TeacherService {
       },
       students: sortByRegistrationSuffix(students).map((student) => ({
         id: student.publicId,
+        studentId: student.publicId,
+        studentIdInt: student.id,
         name: student.name,
         regNo: student.regNo,
         hasPredictionHistory: student._count.predictionEntries > 0,
@@ -723,6 +763,175 @@ export class TeacherService {
     };
   }
 
+  static async getStudentPredictions(studentId, teacherId) {
+    const studentIdentifierWhere = this.buildIdentifierWhere(studentId);
+
+    const selectedStudent = await prisma.studentRecord.findFirst({
+      where: {
+        ...studentIdentifierWhere,
+        class: {
+          teacherId,
+        },
+      },
+      select: {
+        id: true,
+        publicId: true,
+        name: true,
+        regNo: true,
+        class: {
+          select: {
+            publicId: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (!selectedStudent) {
+      throw new Error("Student not found in this class");
+    }
+
+    const entries = await prisma.predictionEntry.findMany({
+      where: {
+        studentRecordId: selectedStudent.id,
+      },
+      select: {
+        predictedScore: true,
+        createdAt: true,
+        predictionRun: {
+          select: {
+            publicId: true,
+            reportCode: true,
+            generatedAt: true,
+            scope: true,
+            title: true,
+          },
+        },
+      },
+    });
+
+    const sortedEntries = [...entries].sort((a, b) => new Date(b.predictionRun.generatedAt) - new Date(a.predictionRun.generatedAt));
+    const topEntries = sortedEntries.slice(0, 6);
+
+    return {
+      class: {
+        id: selectedStudent.class.publicId,
+        name: selectedStudent.class.name,
+      },
+      student: {
+        id: selectedStudent.publicId,
+        name: selectedStudent.name,
+        regNo: selectedStudent.regNo,
+      },
+      count: topEntries.length,
+      predictions: topEntries.map((entry, index) => ({
+        predictionId: entry.predictionRun.publicId,
+        type: entry.predictionRun.scope,
+        label: formatRelativePredictionLabel(entry.predictionRun.generatedAt, index === 0),
+        date: entry.predictionRun.generatedAt,
+        averageScore: roundTo(entry.predictedScore),
+      })),
+    };
+  }
+
+  static async getStudentPredictionDetails(predictionId, studentId, teacherId) {
+    const predictionIdentifierWhere = this.buildIdentifierWhere(predictionId);
+    const studentIdentifierWhere = this.buildIdentifierWhere(studentId);
+
+    const prediction = await prisma.predictionRun.findFirst({
+      where: {
+        ...predictionIdentifierWhere,
+        class: {
+          teacherId,
+        },
+      },
+      select: {
+        id: true,
+        publicId: true,
+        reportCode: true,
+        title: true,
+        scope: true,
+        generatedAt: true,
+        class: {
+          select: {
+            id: true,
+            publicId: true,
+            name: true,
+            subject: true,
+          },
+        },
+      },
+    });
+
+    if (!prediction) {
+      throw new Error("Prediction not found or access denied");
+    }
+
+    const student = await prisma.studentRecord.findFirst({
+      where: {
+        ...studentIdentifierWhere,
+        classId: prediction.class.id,
+      },
+      select: {
+        id: true,
+        publicId: true,
+        name: true,
+        regNo: true,
+      },
+    });
+
+    if (!student) {
+      throw new Error("Student not found in this class");
+    }
+
+    const entry = await prisma.predictionEntry.findFirst({
+      where: {
+        predictionRunId: prediction.id,
+        studentRecordId: student.id,
+      },
+      select: {
+        publicId: true,
+        predictedScore: true,
+        passProbability: true,
+        modelConfidence: true,
+        riskLevel: true,
+        performance: true,
+      },
+    });
+
+    if (!entry) {
+      throw new Error("Prediction entry not found for this student");
+    }
+
+    return {
+      class: {
+        id: prediction.class.publicId,
+        name: prediction.class.name,
+        subject: prediction.class.subject,
+      },
+      prediction: {
+        id: prediction.publicId,
+        reportCode: prediction.reportCode || `RPT-${prediction.publicId}`,
+        title: prediction.title,
+        scope: prediction.scope,
+        date: prediction.generatedAt,
+      },
+      student: {
+        id: student.publicId,
+        name: student.name,
+        regNo: student.regNo,
+      },
+      details: {
+        predictionEntryId: entry.publicId,
+        predictedScore: roundTo(entry.predictedScore),
+        passProbability: roundTo(entry.passProbability * 100),
+        confidence: roundTo(entry.modelConfidence * 100),
+        riskLevel: entry.riskLevel,
+        subjectPerformance: entry.performance,
+      },
+    };
+  }
+
   static async getPredictionDetails(classId, predictionId, teacherId) {
     const teacherClass = await this.assertTeacherClass(classId, teacherId);
     const predictionIdentifierWhere = this.buildIdentifierWhere(predictionId);
@@ -816,7 +1025,7 @@ export class TeacherService {
       class: {
         id: classDetails.publicId,
         name: classDetails.name,
-        code: classDetails.code,
+        subject: classDetails.subject,
         section: classDetails.section,
         semester: classDetails.semester,
         teacherId: classDetails.teacherId,
@@ -825,8 +1034,25 @@ export class TeacherService {
         totalStudents: classDetails._count.students,
       },
       students: sortByRegistrationSuffix(classDetails.students).map((student) => ({
-        ...student,
         id: student.publicId,
+        studentId: student.publicId,
+        name: student.name,
+        regNo: student.regNo,
+        quiz1: student.quiz1,
+        quiz2: student.quiz2,
+        quiz3: student.quiz3,
+        quiz4: student.quiz4,
+        quiz5: student.quiz5,
+        quiz6: student.quiz6,
+        assignment1: student.assignment1,
+        assignment2: student.assignment2,
+        assignment3: student.assignment3,
+        assignment4: student.assignment4,
+        assignment5: student.assignment5,
+        midsPercentage: student.midsPercentage,
+        attendancePercentage: student.attendancePercentage,
+        createdAt: student.createdAt,
+        updatedAt: student.updatedAt,
       })),
     };
   }
@@ -956,6 +1182,13 @@ export class TeacherService {
       const entries = await tx.predictionEntry.findMany({
         where: { predictionRunId: predictionRun.id },
         orderBy: { predictedScore: "desc" },
+        include: {
+          studentRecord: {
+            select: {
+              publicId: true,
+            },
+          },
+        },
       });
 
       return {
@@ -966,8 +1199,18 @@ export class TeacherService {
         },
         count: entries.length,
         entries: entries.map((entry) => ({
-          ...entry,
           id: entry.publicId,
+          studentId: entry.studentRecord?.publicId || null,
+          name: entry.studentName,
+          regNo: entry.regNo,
+          predictedScore: entry.predictedScore,
+          performance: entry.performance,
+          passProbability: entry.passProbability,
+          modelConfidence: entry.modelConfidence,
+          riskLevel: entry.riskLevel,
+          suggestions: entry.suggestions,
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt,
         })),
       };
     });
@@ -1001,8 +1244,8 @@ export class TeacherService {
       if (classData.name !== undefined && classData.name !== null) {
         updateData.name = classData.name;
       }
-      if (classData.code !== undefined) {
-        updateData.code = classData.code || null;
+      if (classData.subject !== undefined) {
+        updateData.subject = classData.subject || null;
       }
       if (classData.section !== undefined) {
         updateData.section = classData.section || null;
@@ -1013,7 +1256,7 @@ export class TeacherService {
 
       const classUpdateResult = await tx.teacherClass.update({
         where: { id: teacherClass.id },
-        data: updateData.name || updateData.code || updateData.section || updateData.semester ? updateData : {},
+        data: updateData.name || updateData.subject || updateData.section || updateData.semester ? updateData : {},
       });
 
       const existingStudents = await tx.studentRecord.findMany({
@@ -1258,8 +1501,26 @@ export class TeacherService {
     });
 
     return sortByRegistrationSuffix(students).map((student) => ({
-      ...student,
       id: student.publicId,
+      studentId: student.publicId,
+      studentIdInt: student.id,
+      name: student.name,
+      regNo: student.regNo,
+      quiz1: student.quiz1,
+      quiz2: student.quiz2,
+      quiz3: student.quiz3,
+      quiz4: student.quiz4,
+      quiz5: student.quiz5,
+      quiz6: student.quiz6,
+      assignment1: student.assignment1,
+      assignment2: student.assignment2,
+      assignment3: student.assignment3,
+      assignment4: student.assignment4,
+      assignment5: student.assignment5,
+      midsPercentage: student.midsPercentage,
+      attendancePercentage: student.attendancePercentage,
+      createdAt: student.createdAt,
+      updatedAt: student.updatedAt,
     }));
   }
 

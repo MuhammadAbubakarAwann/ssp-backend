@@ -28,7 +28,7 @@ model TeacherClass {
   id          Int             @id @default(autoincrement())
   publicId    String          @unique @default(cuid())
   name        String
-  code        String?
+  subject     String?
   section     String?
   semester    String?
   teacherId   Int
