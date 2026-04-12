@@ -199,6 +199,116 @@ export class TeacherController {
     }
   }
 
+  static async getStudentDetails(req, res) {
+    try {
+      const studentId = req.params.studentId;
+      const filters = req.validatedQuery || req.query;
+      const actor = {
+        userId: req.user.userId,
+        role: req.user.role,
+      };
+      const data = await TeacherService.getStudentDetails(studentId, actor, filters);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch student details",
+      });
+    }
+  }
+
+  static async getStudentSubjectPerformance(req, res) {
+    try {
+      const studentId = req.params.studentId;
+      const filters = req.validatedQuery || req.query;
+      const actor = {
+        userId: req.user.userId,
+        role: req.user.role,
+      };
+      const data = await TeacherService.getStudentSubjectPerformance(studentId, actor, filters);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch student subject performance",
+      });
+    }
+  }
+
+  static async getStudentPerformanceOverview(req, res) {
+    try {
+      const studentId = req.params.studentId;
+      const filters = req.validatedQuery || req.query;
+      const actor = {
+        userId: req.user.userId,
+        role: req.user.role,
+      };
+      const data = await TeacherService.getStudentPerformanceOverview(studentId, actor, filters);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch student performance overview",
+      });
+    }
+  }
+
+  static async getStudentLatestPredictions(req, res) {
+    try {
+      const studentId = req.params.studentId;
+      const filters = req.validatedQuery || req.query;
+      const actor = {
+        userId: req.user.userId,
+        role: req.user.role,
+      };
+      const data = await TeacherService.getStudentLatestPredictions(studentId, actor, filters);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch latest predictions",
+      });
+    }
+  }
+
+  static async getStudentRecommendations(req, res) {
+    try {
+      const studentId = req.params.studentId;
+      const filters = req.validatedQuery || req.query;
+      const actor = {
+        userId: req.user.userId,
+        role: req.user.role,
+      };
+      const data = await TeacherService.getStudentRecommendations(studentId, actor, filters);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch student recommendations",
+      });
+    }
+  }
+
   static async getStudentPredictionDetails(req, res) {
     try {
       const teacherId = req.user.userId;
@@ -273,6 +383,45 @@ export class TeacherController {
       return res.status(400).json({
         success: false,
         message: error instanceof Error ? error.message : "Failed to fetch class details",
+      });
+    }
+  }
+
+  static async getClassPerformanceOverview(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const classId = req.params.classId;
+
+      if (classId === "0") {
+        return res.status(200).json({
+          success: true,
+          data: {
+            class: null,
+            metrics: {
+              totalStudents: 0,
+              studentsAtRisk: 0,
+              avgPerformance: 0,
+              improvementRate: 0,
+            },
+            baseline: {
+              latestPredictionRunId: null,
+              latestPredictionAt: null,
+              previousPredictionAt: null,
+            },
+          },
+        });
+      }
+
+      const data = await TeacherService.getClassPerformanceOverview(classId, teacherId);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch class performance overview",
       });
     }
   }

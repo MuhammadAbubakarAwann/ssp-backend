@@ -47,6 +47,13 @@ model StudentRecord {
   classId              Int
   name                 String
   regNo                String
+  email                String?
+  phoneNumber          String?
+  address              String?
+  expectedCgpa         Float?
+  overallRiskLevel     RiskLevel?
+  classRank            Int?
+  semesterAvgScore     Float?
   quiz1                Float?
   quiz2                Float?
   quiz3                Float?

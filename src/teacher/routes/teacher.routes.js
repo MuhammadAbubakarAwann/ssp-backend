@@ -70,6 +70,47 @@ const validateParams = (schema) => (req, res, next) => {
   return next();
 };
 
+router.get(
+  "/students/:studentId/details",
+  authenticate,
+  authorizeRoles("TEACHER", "ADMIN"),
+  validateParams(teacherValidation.studentIdParam),
+  validateQuery(teacherValidation.studentDetailsQuery),
+  TeacherController.getStudentDetails
+);
+router.get(
+  "/students/:studentId/subject-performance",
+  authenticate,
+  authorizeRoles("TEACHER", "ADMIN"),
+  validateParams(teacherValidation.studentIdParam),
+  validateQuery(teacherValidation.studentSubjectPerformanceQuery),
+  TeacherController.getStudentSubjectPerformance
+);
+router.get(
+  "/students/:studentId/performance-overview",
+  authenticate,
+  authorizeRoles("TEACHER", "ADMIN"),
+  validateParams(teacherValidation.studentIdParam),
+  validateQuery(teacherValidation.studentPerformanceOverviewQuery),
+  TeacherController.getStudentPerformanceOverview
+);
+router.get(
+  "/students/:studentId/latest-predictions",
+  authenticate,
+  authorizeRoles("TEACHER", "ADMIN"),
+  validateParams(teacherValidation.studentIdParam),
+  validateQuery(teacherValidation.studentLatestPredictionsQuery),
+  TeacherController.getStudentLatestPredictions
+);
+router.get(
+  "/students/:studentId/recommendations",
+  authenticate,
+  authorizeRoles("TEACHER", "ADMIN"),
+  validateParams(teacherValidation.studentIdParam),
+  validateQuery(teacherValidation.studentRecommendationsQuery),
+  TeacherController.getStudentRecommendations
+);
+
 router.use(authenticate, authorizeRoles("TEACHER"));
 
 router.post(
@@ -86,6 +127,11 @@ router.put(
 router.post("/classes", validateBody(teacherValidation.createClass), TeacherController.createClass);
 router.get("/classes", TeacherController.getClasses);
 router.get("/classes/names", TeacherController.getClassNames);
+router.get(
+  "/classes/:classId/performance-overview",
+  validateParams(teacherValidation.classIdParam),
+  TeacherController.getClassPerformanceOverview
+);
 router.get("/classes/:classId", validateParams(teacherValidation.classIdParam), TeacherController.getClassDetails);
 router.delete("/classes/:classId", validateParams(teacherValidation.classIdParam), TeacherController.deleteClass);
 router.get("/classes/:classId/students", validateParams(teacherValidation.classIdParam), TeacherController.getClassStudents);

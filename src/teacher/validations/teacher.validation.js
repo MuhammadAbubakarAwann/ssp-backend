@@ -11,6 +11,10 @@ const optionalIdSchema = Joi.alternatives().try(
   Joi.string().trim().pattern(/^\d+$/)
 );
 
+const optionalStudentEmail = Joi.string().trim().email({ tlds: { allow: false } }).allow(null, "");
+const optionalStudentPhone = Joi.string().trim().max(30).allow(null, "");
+const optionalStudentAddress = Joi.string().trim().max(500).allow(null, "");
+
 export const teacherValidation = {
   createClass: Joi.object({
     name: Joi.string().trim().min(1).max(150).required(),
@@ -45,6 +49,9 @@ export const teacherValidation = {
   studentRow: Joi.object({
     name: Joi.string().trim().min(1).max(150).required(),
     regNo: Joi.string().trim().min(1).max(100).required(),
+    email: optionalStudentEmail,
+    phoneNumber: optionalStudentPhone,
+    address: optionalStudentAddress,
     quiz1: scoreSchema,
     quiz2: scoreSchema,
     quiz3: scoreSchema,
@@ -64,6 +71,9 @@ export const teacherValidation = {
     students: Joi.array().items(Joi.object({
       name: Joi.string().trim().min(1).max(150).required(),
       regNo: Joi.string().trim().min(1).max(100).required(),
+      email: optionalStudentEmail,
+      phoneNumber: optionalStudentPhone,
+      address: optionalStudentAddress,
       quiz1: scoreSchema,
       quiz2: scoreSchema,
       quiz3: scoreSchema,
@@ -90,6 +100,9 @@ export const teacherValidation = {
     students: Joi.array().items(Joi.object({
       name: Joi.string().trim().min(1).max(150).required(),
       regNo: Joi.string().trim().min(1).max(100).required(),
+      email: optionalStudentEmail,
+      phoneNumber: optionalStudentPhone,
+      address: optionalStudentAddress,
       quiz1: scoreSchema,
       quiz2: scoreSchema,
       quiz3: scoreSchema,
@@ -117,6 +130,9 @@ export const teacherValidation = {
       id: optionalIdSchema.optional(),
       name: Joi.string().trim().min(1).max(150).required(),
       regNo: Joi.string().trim().min(1).max(100).required(),
+      email: optionalStudentEmail,
+      phoneNumber: optionalStudentPhone,
+      address: optionalStudentAddress,
       quiz1: scoreSchema,
       quiz2: scoreSchema,
       quiz3: scoreSchema,
@@ -162,5 +178,25 @@ export const teacherValidation = {
     scope: Joi.string().trim().uppercase().valid("CLASS", "SELECTED").optional(),
     avgScoreMin: Joi.number().min(0).max(100).optional(),
     avgScoreMax: Joi.number().min(0).max(100).optional(),
+  }),
+
+  studentDetailsQuery: Joi.object({
+    semester: Joi.string().trim().max(50).optional(),
+  }),
+
+  studentSubjectPerformanceQuery: Joi.object({
+    semester: Joi.string().trim().max(50).optional(),
+  }),
+
+  studentPerformanceOverviewQuery: Joi.object({
+    semester: Joi.string().trim().max(50).optional(),
+  }),
+
+  studentLatestPredictionsQuery: Joi.object({
+    semester: Joi.string().trim().max(50).optional(),
+  }),
+
+  studentRecommendationsQuery: Joi.object({
+    semester: Joi.string().trim().max(50).optional(),
   }),
 };

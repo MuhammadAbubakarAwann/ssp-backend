@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import authRoutes from "./auth/routes/auth.routes.js";
 import teacherRoutes from "./teacher/routes/teacher.routes.js";
+import studentRoutes from "./student/routes/student.routes.js";
 
 const app = express();
 
@@ -11,6 +12,7 @@ app.use(express.json());
 
 app.use("/api/auth", authRoutes);
 app.use("/api/teacher", teacherRoutes);
+app.use("/api/student", studentRoutes);
 
 app.get("/", (req, res) => {
   res.send("API is running...");

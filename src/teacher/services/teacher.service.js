@@ -1,12 +1,17 @@
 import XLSX from "xlsx";
 import { createId } from "@paralleldrive/cuid2";
 import { prisma } from "../../config/database.js";
+import { PasswordService } from "../../auth/utils/password.js";
 
 const normalizeHeader = (value) => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
 
 const excelHeaderToField = {
   "name": "name",
   "reg-no": "regNo",
+  "email": "email",
+  "phone": "phoneNumber",
+  "phone number": "phoneNumber",
+  "address": "address",
   "quiz 1": "quiz1",
   "quiz 2": "quiz2",
   "quiz 3": "quiz3",
@@ -150,6 +155,31 @@ const formatRelativePredictionLabel = (date, isLatest = false) => {
   return isLatest ? `Latest (${relative})` : relative;
 };
 
+const scoreToGrade = (score) => {
+  if (!Number.isFinite(score)) {
+    return null;
+  }
+
+  if (score >= 85) return "A";
+  if (score >= 75) return "B";
+  if (score >= 65) return "C";
+  if (score >= 50) return "D";
+  return "F";
+};
+
+const getTrendDirection = (latestScore, previousScore) => {
+  if (!Number.isFinite(latestScore) || !Number.isFinite(previousScore)) {
+    return "NO_PREVIOUS";
+  }
+
+  const delta = latestScore - previousScore;
+  if (Math.abs(delta) < 0.01) {
+    return "STABLE";
+  }
+
+  return delta > 0 ? "UP" : "DOWN";
+};
+
 export class TeacherService {
   static isNumericId(value) {
     return /^\d+$/.test(String(value || "").trim());
@@ -166,6 +196,225 @@ export class TeacherService {
     }
 
     return { publicId: value };
+  }
+
+  static buildStudentEmailFromRegNo(regNo) {
+    const normalizedRegNo = String(regNo || "").trim();
+    if (!normalizedRegNo) {
+      throw new Error("regNo is required to build student email");
+    }
+
+    return `${normalizedRegNo}@student.hitecuni.edu.pk`;
+  }
+
+  static splitStudentName(fullName) {
+    const value = String(fullName || "").trim();
+    const [firstName, ...rest] = value.split(/\s+/).filter(Boolean);
+
+    return {
+      firstName: firstName || "Student",
+      lastName: rest.join(" ") || "User",
+    };
+  }
+
+  static async ensureStudentUsersExist(students, options = {}) {
+    if (!Array.isArray(students) || students.length === 0) {
+      return;
+    }
+
+    const db = options.tx || prisma;
+    const defaultPasswordHash = await PasswordService.hash("12345678");
+
+    for (const student of students) {
+      const email = String(student.email || "").trim();
+      if (!email) {
+        continue;
+      }
+
+      const existingUser = await db.user.findUnique({
+        where: { email },
+        select: { id: true },
+      });
+
+      if (existingUser) {
+        continue;
+      }
+
+      const { firstName, lastName } = this.splitStudentName(student.name);
+      await db.user.create({
+        data: {
+          email,
+          firstName,
+          lastName,
+          password: defaultPasswordHash,
+          role: "STUDENT",
+        },
+      });
+    }
+  }
+
+  static toDummyExpectedCgpaFromScore(avgScore) {
+    const score = Number(avgScore);
+    if (!Number.isFinite(score)) {
+      return null;
+    }
+
+    const raw = (score / 100) * 4;
+    return roundTo(Math.min(4, Math.max(0, raw)));
+  }
+
+  static pickHigherRisk(currentRisk, candidateRisk) {
+    const riskWeight = {
+      LOW: 1,
+      MID: 2,
+      HIGH: 3,
+    };
+
+    if (!currentRisk) {
+      return candidateRisk || null;
+    }
+
+    if (!candidateRisk) {
+      return currentRisk;
+    }
+
+    return (riskWeight[candidateRisk] || 0) > (riskWeight[currentRisk] || 0)
+      ? candidateRisk
+      : currentRisk;
+  }
+
+  static async refreshSemesterStudentAnalyticsFromPredictions(semester, options = {}) {
+    const normalizedSemester = String(semester || "").trim();
+    if (!normalizedSemester) {
+      return;
+    }
+
+    const db = options.tx || prisma;
+
+    const semesterStudents = await db.studentRecord.findMany({
+      where: {
+        class: {
+          semester: normalizedSemester,
+        },
+      },
+      select: {
+        regNo: true,
+      },
+    });
+
+    const allSemesterRegNos = [...new Set(semesterStudents.map((item) => item.regNo))];
+
+    if (allSemesterRegNos.length === 0) {
+      return;
+    }
+
+    const predictionEntries = await db.predictionEntry.findMany({
+      where: {
+        predictionRun: {
+          class: {
+            semester: normalizedSemester,
+          },
+        },
+      },
+      select: {
+        regNo: true,
+        predictedScore: true,
+        riskLevel: true,
+        predictionRun: {
+          select: {
+            generatedAt: true,
+            classId: true,
+          },
+        },
+      },
+      orderBy: {
+        predictionRun: {
+          generatedAt: "desc",
+        },
+      },
+    });
+
+    const latestByClassAndRegNo = new Map();
+    for (const entry of predictionEntries) {
+      const classId = entry.predictionRun.classId;
+      const key = `${classId}:${String(entry.regNo || "").toLowerCase()}`;
+      if (!latestByClassAndRegNo.has(key)) {
+        latestByClassAndRegNo.set(key, entry);
+      }
+    }
+
+    const perStudentAggregate = new Map();
+    for (const entry of latestByClassAndRegNo.values()) {
+      const regNo = String(entry.regNo || "").trim();
+      if (!regNo) {
+        continue;
+      }
+
+      const key = regNo.toLowerCase();
+      const existing = perStudentAggregate.get(key) || {
+        regNo,
+        scores: [],
+        overallRiskLevel: null,
+      };
+
+      existing.scores.push(Number(entry.predictedScore));
+      existing.overallRiskLevel = this.pickHigherRisk(existing.overallRiskLevel, String(entry.riskLevel || "").toUpperCase());
+
+      perStudentAggregate.set(key, existing);
+    }
+
+    const rankedStudents = [...perStudentAggregate.values()]
+      .map((item) => {
+        const scoreSum = item.scores.reduce((sum, value) => sum + value, 0);
+        const scoreAvg = item.scores.length ? scoreSum / item.scores.length : null;
+
+        return {
+          regNo: item.regNo,
+          semesterAvgScore: scoreAvg === null ? null : roundTo(scoreAvg),
+          overallRiskLevel: item.overallRiskLevel,
+          expectedCgpa: scoreAvg === null ? null : this.toDummyExpectedCgpaFromScore(scoreAvg),
+        };
+      })
+      .sort((a, b) => {
+        const aScore = Number.isFinite(a.semesterAvgScore) ? a.semesterAvgScore : -1;
+        const bScore = Number.isFinite(b.semesterAvgScore) ? b.semesterAvgScore : -1;
+
+        if (aScore !== bScore) {
+          return bScore - aScore;
+        }
+
+        return String(a.regNo).localeCompare(String(b.regNo));
+      })
+      .map((item, index) => ({
+        ...item,
+        classRank: index + 1,
+      }));
+
+    const analyticsByRegNo = new Map(rankedStudents.map((item) => [String(item.regNo).toLowerCase(), item]));
+
+    for (const regNo of allSemesterRegNos) {
+      const analytics = analyticsByRegNo.get(String(regNo).toLowerCase()) || {
+        semesterAvgScore: null,
+        classRank: null,
+        overallRiskLevel: null,
+        expectedCgpa: null,
+      };
+
+      await db.studentRecord.updateMany({
+        where: {
+          regNo,
+          class: {
+            semester: normalizedSemester,
+          },
+        },
+        data: {
+          semesterAvgScore: analytics.semesterAvgScore,
+          classRank: analytics.classRank,
+          overallRiskLevel: analytics.overallRiskLevel,
+          expectedCgpa: analytics.expectedCgpa,
+        },
+      });
+    }
   }
 
   static async createClassWithStudents(classData, students, teacherId) {
@@ -211,6 +460,8 @@ export class TeacherService {
         orderBy: { regNo: "asc" },
       });
 
+      await this.ensureStudentUsersExist(createdStudents, { tx });
+
       return {
         class: {
           ...teacherClass,
@@ -243,9 +494,15 @@ export class TeacherService {
   }
 
   static normalizeStudentRow(student) {
+    const regNo = String(student.regNo || "").trim();
     const normalized = {
       name: String(student.name || "").trim(),
-      regNo: String(student.regNo || "").trim(),
+      regNo,
+      email: student.email === undefined || student.email === null || student.email === ""
+        ? this.buildStudentEmailFromRegNo(regNo)
+        : String(student.email).trim(),
+      phoneNumber: student.phoneNumber === undefined || student.phoneNumber === null || student.phoneNumber === "" ? null : String(student.phoneNumber).trim(),
+      address: student.address === undefined || student.address === null || student.address === "" ? null : String(student.address).trim(),
       quiz1: parseNumeric(student.quiz1, "quiz1"),
       quiz2: parseNumeric(student.quiz2, "quiz2"),
       quiz3: parseNumeric(student.quiz3, "quiz3"),
@@ -834,6 +1091,956 @@ export class TeacherService {
     };
   }
 
+  static async getStudentDetails(studentId, actor, filters = {}) {
+    const studentIdentifierWhere = this.buildIdentifierWhere(studentId);
+
+    if (!actor?.userId || !actor?.role) {
+      throw new Error("Unauthorized access");
+    }
+
+    const role = String(actor.role || "").toUpperCase();
+    const userId = Number(actor.userId);
+
+    let accessWhere = null;
+
+    if (role === "TEACHER") {
+      accessWhere = {
+        ...studentIdentifierWhere,
+        class: {
+          teacherId: userId,
+        },
+      };
+    } else if (role === "ADMIN") {
+      accessWhere = {
+        ...studentIdentifierWhere,
+      };
+    } else if (role === "STUDENT") {
+      const requester = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+
+      if (!requester?.email) {
+        throw new Error("Student account email is required to access student details");
+      }
+
+      accessWhere = {
+        ...studentIdentifierWhere,
+        email: {
+          equals: requester.email,
+          mode: "insensitive",
+        },
+      };
+    } else {
+      throw new Error("Forbidden: unsupported role");
+    }
+
+    const selectedStudent = await prisma.studentRecord.findFirst({
+      where: accessWhere,
+      select: {
+        publicId: true,
+        name: true,
+        regNo: true,
+        email: true,
+        class: {
+          select: {
+            semester: true,
+          },
+        },
+      },
+    });
+
+    if (!selectedStudent) {
+      throw new Error("Student not found in your classes");
+    }
+
+    const targetSemester = String(filters.semester || selectedStudent.class.semester || "").trim();
+    if (!targetSemester) {
+      throw new Error("semester is required for this student because class semester is missing");
+    }
+
+    await this.refreshSemesterStudentAnalyticsFromPredictions(targetSemester);
+
+    const studentEnrollments = await prisma.studentRecord.findMany({
+      where: {
+        regNo: selectedStudent.regNo,
+        ...(role === "STUDENT"
+          ? {
+              email: {
+                equals: selectedStudent.email,
+                mode: "insensitive",
+              },
+            }
+          : {}),
+        class: {
+          semester: targetSemester,
+        },
+      },
+      select: {
+        publicId: true,
+        name: true,
+        regNo: true,
+        email: true,
+        phoneNumber: true,
+        address: true,
+        attendancePercentage: true,
+        expectedCgpa: true,
+        overallRiskLevel: true,
+        classRank: true,
+        semesterAvgScore: true,
+        class: {
+          select: {
+            publicId: true,
+            name: true,
+            subject: true,
+            semester: true,
+          },
+        },
+      },
+      orderBy: {
+        class: {
+          subject: "asc",
+        },
+      },
+    });
+
+    if (!studentEnrollments.length) {
+      throw new Error("Student enrollment not found for the requested semester");
+    }
+
+    const latestEnrollment = studentEnrollments[0];
+    const analyticsSource = studentEnrollments.find((row) => row.classRank !== null || row.expectedCgpa !== null) || latestEnrollment;
+
+    return {
+      student: {
+        id: selectedStudent.publicId,
+        name: latestEnrollment.name,
+        regNo: latestEnrollment.regNo,
+        email: latestEnrollment.email,
+        phoneNumber: latestEnrollment.phoneNumber,
+        address: latestEnrollment.address,
+        semester: targetSemester,
+        overallRiskLevel: analyticsSource.overallRiskLevel,
+        expectedCgpa: analyticsSource.expectedCgpa,
+        classRank: analyticsSource.classRank,
+        averageScore: analyticsSource.semesterAvgScore,
+      },
+      attendanceBySubject: studentEnrollments.map((row) => ({
+        classId: row.class.publicId,
+        className: row.class.name,
+        subject: row.class.subject || row.class.name,
+        attendancePercentage: row.attendancePercentage,
+      })),
+    };
+  }
+
+  static async getSelfStudentDetails(actor, filters = {}) {
+    if (!actor?.userId || String(actor.role || "").toUpperCase() !== "STUDENT") {
+      throw new Error("Forbidden: student access required");
+    }
+
+    const requester = await prisma.user.findUnique({
+      where: { id: Number(actor.userId) },
+      select: { email: true },
+    });
+
+    if (!requester?.email) {
+      throw new Error("Student account email is required to access student details");
+    }
+
+    const studentRecord = await prisma.studentRecord.findFirst({
+      where: {
+        email: {
+          equals: requester.email,
+          mode: "insensitive",
+        },
+      },
+      select: {
+        publicId: true,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    });
+
+    if (!studentRecord) {
+      throw new Error("Student record not found for this account");
+    }
+
+    return this.getStudentDetails(studentRecord.publicId, actor, filters);
+  }
+
+  static async getStudentSubjectPerformance(studentId, actor, filters = {}) {
+    const details = await this.getStudentDetails(studentId, actor, filters);
+    const role = String(actor.role || "").toUpperCase();
+
+    const where = {
+      regNo: details.student.regNo,
+      class: {
+        semester: details.student.semester,
+      },
+    };
+
+    if (role === "STUDENT") {
+      where.email = {
+        equals: details.student.email,
+        mode: "insensitive",
+      };
+    }
+
+    const enrollments = await prisma.studentRecord.findMany({
+      where,
+      select: {
+        publicId: true,
+        classId: true,
+        class: {
+          select: {
+            publicId: true,
+            name: true,
+            subject: true,
+            semester: true,
+          },
+        },
+        predictionEntries: {
+          select: {
+            predictedScore: true,
+            performance: true,
+            predictionRun: {
+              select: {
+                generatedAt: true,
+              },
+            },
+          },
+          orderBy: {
+            predictionRun: {
+              generatedAt: "desc",
+            },
+          },
+        },
+      },
+      orderBy: {
+        class: {
+          subject: "asc",
+        },
+      },
+    });
+
+    const subjects = enrollments.map((enrollment) => {
+      const entries = enrollment.predictionEntries || [];
+      const latest = entries[0] || null;
+      const previous = entries[1] || null;
+      const averageScore = entries.length
+        ? roundTo(entries.reduce((sum, entry) => sum + Number(entry.predictedScore || 0), 0) / entries.length)
+        : null;
+      const latestScore = latest ? roundTo(Number(latest.predictedScore || 0)) : null;
+      const previousScore = previous ? roundTo(Number(previous.predictedScore || 0)) : null;
+
+      return {
+        classId: enrollment.class.publicId,
+        className: enrollment.class.name,
+        subject: enrollment.class.subject || enrollment.class.name,
+        predictedPerformance: latest?.performance || null,
+        grade: scoreToGrade(averageScore),
+        averageScore,
+        latestScore,
+        previousScore,
+        trend: getTrendDirection(latestScore, previousScore),
+        trendChange: Number.isFinite(latestScore) && Number.isFinite(previousScore)
+          ? roundTo(latestScore - previousScore)
+          : null,
+        latestPredictionAt: latest?.predictionRun?.generatedAt || null,
+      };
+    });
+
+    return {
+      student: {
+        id: details.student.id,
+        name: details.student.name,
+        regNo: details.student.regNo,
+        email: details.student.email,
+        semester: details.student.semester,
+      },
+      subjects,
+    };
+  }
+
+  static async getSelfStudentSubjectPerformance(actor, filters = {}) {
+    if (!actor?.userId || String(actor.role || "").toUpperCase() !== "STUDENT") {
+      throw new Error("Forbidden: student access required");
+    }
+
+    const requester = await prisma.user.findUnique({
+      where: { id: Number(actor.userId) },
+      select: { email: true },
+    });
+
+    if (!requester?.email) {
+      throw new Error("Student account email is required to access subject performance");
+    }
+
+    const studentRecord = await prisma.studentRecord.findFirst({
+      where: {
+        email: {
+          equals: requester.email,
+          mode: "insensitive",
+        },
+      },
+      select: {
+        publicId: true,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    });
+
+    if (!studentRecord) {
+      throw new Error("Student record not found for this account");
+    }
+
+    return this.getStudentSubjectPerformance(studentRecord.publicId, actor, filters);
+  }
+
+  static async getStudentLatestPredictions(studentId, actor, filters = {}) {
+    const details = await this.getStudentDetails(studentId, actor, filters);
+    const role = String(actor.role || "").toUpperCase();
+
+    const where = {
+      regNo: details.student.regNo,
+      class: {
+        semester: details.student.semester,
+      },
+    };
+
+    if (role === "STUDENT") {
+      where.email = {
+        equals: details.student.email,
+        mode: "insensitive",
+      };
+    }
+
+    const enrollments = await prisma.studentRecord.findMany({
+      where,
+      select: {
+        class: {
+          select: {
+            subject: true,
+            name: true,
+            semester: true,
+          },
+        },
+        predictionEntries: {
+          take: 1,
+          orderBy: {
+            predictionRun: {
+              generatedAt: "desc",
+            },
+          },
+          select: {
+            predictedScore: true,
+            modelConfidence: true,
+            riskLevel: true,
+            suggestions: true,
+            predictionRun: {
+              select: {
+                generatedAt: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: {
+        class: {
+          subject: "asc",
+        },
+      },
+    });
+
+    const predictions = enrollments
+      .map((row) => {
+        const latest = row.predictionEntries[0] || null;
+        if (!latest) {
+          return null;
+        }
+
+        return {
+          semester: row.class.semester || details.student.semester,
+          subject: row.class.subject || row.class.name,
+          predictedScore: roundTo(Number(latest.predictedScore || 0)),
+          confidence: roundTo(Number(latest.modelConfidence || 0) * 100),
+          riskLevel: latest.riskLevel || null,
+          recommendations: latest.suggestions ?? null,
+          predictedAt: latest.predictionRun?.generatedAt || null,
+        };
+      })
+      .filter(Boolean);
+
+    return {
+      student: {
+        id: details.student.id,
+        name: details.student.name,
+        regNo: details.student.regNo,
+      },
+      predictions,
+    };
+  }
+
+  static async getSelfStudentLatestPredictions(actor, filters = {}) {
+    if (!actor?.userId || String(actor.role || "").toUpperCase() !== "STUDENT") {
+      throw new Error("Forbidden: student access required");
+    }
+
+    const requester = await prisma.user.findUnique({
+      where: { id: Number(actor.userId) },
+      select: { email: true },
+    });
+
+    if (!requester?.email) {
+      throw new Error("Student account email is required to access latest predictions");
+    }
+
+    const studentRecord = await prisma.studentRecord.findFirst({
+      where: {
+        email: {
+          equals: requester.email,
+          mode: "insensitive",
+        },
+      },
+      select: {
+        publicId: true,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    });
+
+    if (!studentRecord) {
+      throw new Error("Student record not found for this account");
+    }
+
+    return this.getStudentLatestPredictions(studentRecord.publicId, actor, filters);
+  }
+
+  static async getStudentRecommendations(studentId, actor, filters = {}) {
+    const details = await this.getStudentDetails(studentId, actor, filters);
+    const role = String(actor.role || "").toUpperCase();
+
+    const entryWhere = {
+      regNo: details.student.regNo,
+      predictionRun: {
+        class: {
+          semester: details.student.semester,
+        },
+      },
+    };
+
+    if (role === "STUDENT") {
+      entryWhere.studentRecord = {
+        email: {
+          equals: details.student.email,
+          mode: "insensitive",
+        },
+      };
+    }
+
+    const latestEntry = await prisma.predictionEntry.findFirst({
+      where: entryWhere,
+      select: {
+        id: true,
+        publicId: true,
+        suggestions: true,
+        predictionRun: {
+          select: {
+            generatedAt: true,
+          },
+        },
+      },
+      orderBy: {
+        predictionRun: {
+          generatedAt: "desc",
+        },
+      },
+    });
+
+    if (!latestEntry) {
+      throw new Error("No prediction found for this student in the selected semester");
+    }
+
+    const defaultSnapshot = {
+      strengths: [
+        "Excellent Performance in AI/ML and Web Development",
+        "Consistent improvement across semesters",
+        "Good attendance rate (82%)",
+      ],
+      areasForImprovement: [
+        "Database Systems showing declining performance",
+        "Increase practical coding practice",
+        "Focus on theory fundamentals",
+      ],
+      nextSteps: [
+        "Consider advanced AI/ML electives",
+        "Join web development projects",
+        "Schedule tutoring for Database Systems",
+        "Maintain current attendance pattern",
+      ],
+      source: "DUMMY",
+      generatedAt: new Date().toISOString(),
+    };
+
+    let savedSuggestions = latestEntry.suggestions;
+    const currentSuggestions = latestEntry.suggestions;
+
+    const hasSnapshot =
+      currentSuggestions &&
+      typeof currentSuggestions === "object" &&
+      !Array.isArray(currentSuggestions) &&
+      currentSuggestions.recommendationSnapshot &&
+      Array.isArray(currentSuggestions.recommendationSnapshot.strengths) &&
+      Array.isArray(currentSuggestions.recommendationSnapshot.areasForImprovement) &&
+      Array.isArray(currentSuggestions.recommendationSnapshot.nextSteps);
+
+    if (!hasSnapshot) {
+      const nextSuggestions =
+        currentSuggestions && typeof currentSuggestions === "object" && !Array.isArray(currentSuggestions)
+          ? {
+              ...currentSuggestions,
+              recommendationSnapshot: defaultSnapshot,
+            }
+          : {
+              legacySuggestions: currentSuggestions ?? null,
+              recommendationSnapshot: defaultSnapshot,
+            };
+
+      const updatedEntry = await prisma.predictionEntry.update({
+        where: { id: latestEntry.id },
+        data: {
+          suggestions: nextSuggestions,
+        },
+        select: {
+          suggestions: true,
+        },
+      });
+
+      savedSuggestions = updatedEntry.suggestions;
+    }
+
+    const snapshot =
+      savedSuggestions && typeof savedSuggestions === "object" && !Array.isArray(savedSuggestions)
+        ? savedSuggestions.recommendationSnapshot
+        : null;
+
+    if (!snapshot) {
+      throw new Error("Failed to build recommendation snapshot");
+    }
+
+    return {
+      student: {
+        id: details.student.id,
+        name: details.student.name,
+        regNo: details.student.regNo,
+        semester: details.student.semester,
+      },
+      recommendations: {
+        strengths: snapshot.strengths || [],
+        areasForImprovement: snapshot.areasForImprovement || [],
+        nextSteps: snapshot.nextSteps || [],
+        source: snapshot.source || "DUMMY",
+        generatedAt: snapshot.generatedAt || latestEntry.predictionRun.generatedAt,
+      },
+    };
+  }
+
+  static async getSelfStudentRecommendations(actor, filters = {}) {
+    if (!actor?.userId || String(actor.role || "").toUpperCase() !== "STUDENT") {
+      throw new Error("Forbidden: student access required");
+    }
+
+    const requester = await prisma.user.findUnique({
+      where: { id: Number(actor.userId) },
+      select: { email: true },
+    });
+
+    if (!requester?.email) {
+      throw new Error("Student account email is required to access recommendations");
+    }
+
+    const studentRecord = await prisma.studentRecord.findFirst({
+      where: {
+        email: {
+          equals: requester.email,
+          mode: "insensitive",
+        },
+      },
+      select: {
+        publicId: true,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    });
+
+    if (!studentRecord) {
+      throw new Error("Student record not found for this account");
+    }
+
+    return this.getStudentRecommendations(studentRecord.publicId, actor, filters);
+  }
+
+  static async getStudentPerformanceOverview(studentId, actor, filters = {}) {
+    const studentIdentifierWhere = this.buildIdentifierWhere(studentId);
+
+    if (!actor?.userId || !actor?.role) {
+      throw new Error("Unauthorized access");
+    }
+
+    const role = String(actor.role || "").toUpperCase();
+    const userId = Number(actor.userId);
+
+    let accessWhere = null;
+
+    if (role === "TEACHER") {
+      accessWhere = {
+        ...studentIdentifierWhere,
+        class: {
+          teacherId: userId,
+        },
+      };
+    } else if (role === "ADMIN") {
+      accessWhere = {
+        ...studentIdentifierWhere,
+      };
+    } else if (role === "STUDENT") {
+      const requester = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+
+      if (!requester?.email) {
+        throw new Error("Student account email is required");
+      }
+
+      accessWhere = {
+        ...studentIdentifierWhere,
+        email: {
+          equals: requester.email,
+          mode: "insensitive",
+        },
+      };
+    } else {
+      throw new Error("Forbidden: unsupported role");
+    }
+
+    const selectedStudent = await prisma.studentRecord.findFirst({
+      where: accessWhere,
+      select: {
+        publicId: true,
+        name: true,
+        regNo: true,
+        email: true,
+        class: {
+          select: {
+            semester: true,
+          },
+        },
+      },
+    });
+
+    if (!selectedStudent) {
+      throw new Error("Student not found");
+    }
+
+    let targetSemester = String(filters.semester || selectedStudent.class.semester || "").trim();
+    if (!targetSemester) {
+      const latestEnrollmentWithSemester = await prisma.studentRecord.findFirst({
+        where: {
+          regNo: selectedStudent.regNo,
+          ...(role === "STUDENT"
+            ? {
+                email: {
+                  equals: selectedStudent.email,
+                  mode: "insensitive",
+                },
+              }
+            : {}),
+          class: {
+            semester: {
+              not: null,
+            },
+          },
+        },
+        select: {
+          class: {
+            select: {
+              semester: true,
+            },
+          },
+        },
+        orderBy: {
+          updatedAt: "desc",
+        },
+      });
+
+      targetSemester = String(latestEnrollmentWithSemester?.class?.semester || "").trim();
+    }
+    if (!targetSemester) {
+      throw new Error("Student semester not found. Please pass ?semester=... in query");
+    }
+
+    // Get student enrollments for the semester
+    const enrollments = await prisma.studentRecord.findMany({
+      where: {
+        regNo: selectedStudent.regNo,
+        ...(role === "STUDENT"
+          ? {
+              email: {
+                equals: selectedStudent.email,
+                mode: "insensitive",
+              },
+            }
+          : {}),
+        class: {
+          semester: targetSemester,
+        },
+      },
+      select: {
+        publicId: true,
+        id: true,
+        name: true,
+        regNo: true,
+        createdAt: true,
+        updatedAt: true,
+        quiz1: true,
+        quiz2: true,
+        quiz3: true,
+        quiz4: true,
+        quiz5: true,
+        quiz6: true,
+        assignment1: true,
+        assignment2: true,
+        assignment3: true,
+        assignment4: true,
+        assignment5: true,
+        midsPercentage: true,
+        semesterAvgScore: true,
+        classRank: true,
+        class: {
+          select: {
+            publicId: true,
+            name: true,
+            subject: true,
+          },
+        },
+        predictionEntries: {
+          select: {
+            predictedScore: true,
+            performance: true,
+          },
+        },
+      },
+      orderBy: {
+        class: {
+          subject: "asc",
+        },
+      },
+    });
+
+    if (!enrollments.length) {
+      throw new Error("Student enrollment not found for the semester");
+    }
+
+    // Count unique students in the semester so rank is out of total students, not total enrollments.
+    const semesterStudents = await prisma.studentRecord.findMany({
+      where: {
+        class: {
+          semester: targetSemester,
+        },
+      },
+      select: {
+        regNo: true,
+      },
+      distinct: ["regNo"],
+    });
+
+    const classSize = semesterStudents.length || 1;
+
+    const firstEnrollment = enrollments[0];
+    const averageScore = firstEnrollment.semesterAvgScore || 0;
+    const classRank = firstEnrollment.classRank || classSize;
+    const percentile = ((classSize - classRank) / classSize) * 100;
+
+    // Determine standing
+    let standing = "Fair Standing";
+    if (percentile >= 90) standing = "Excellent Standing";
+    else if (percentile >= 75) standing = "Good Standing";
+    else if (percentile >= 50) standing = "Satisfactory Standing";
+    else if (percentile >= 25) standing = "Warning";
+    else standing = "Critical";
+
+    const previousSemesterEnrollment = await prisma.studentRecord.findFirst({
+      where: {
+        regNo: selectedStudent.regNo,
+        ...(role === "STUDENT"
+          ? {
+              email: {
+                equals: selectedStudent.email,
+                mode: "insensitive",
+              },
+            }
+          : {}),
+        semesterAvgScore: {
+          not: null,
+        },
+        class: {
+          semester: {
+            not: targetSemester,
+          },
+        },
+      },
+      select: {
+        semesterAvgScore: true,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    });
+
+    // Calculate improvement rate
+    const currentAvg = firstEnrollment.semesterAvgScore || 0;
+    const previousAvg = Number(previousSemesterEnrollment?.semesterAvgScore || 0);
+    const improvementRate = previousAvg > 0 ? ((currentAvg - previousAvg) / previousAvg) * 100 : (currentAvg > 0 ? 100 : 0);
+
+    // Count strong subjects (A or A+ grades, which is 85+ score)
+    const strongSubjects = enrollments.filter((e) => {
+      const predictions = e.predictionEntries || [];
+      if (!predictions.length) return false;
+      const avgScore = predictions.reduce((sum, p) => sum + (p.predictedScore || 0), 0) / predictions.length;
+      return avgScore >= 85;
+    }).length;
+
+    const toPercent = (rawValue) => {
+      if (rawValue === null || rawValue === undefined || rawValue === "") {
+        return null;
+      }
+      if (!Number.isFinite(Number(rawValue))) {
+        return null;
+      }
+      const value = Number(rawValue);
+      const asPercent = value <= 10 ? value * 10 : value;
+      return roundTo(Math.max(0, Math.min(100, asPercent)));
+    };
+
+    const recentRows = [...enrollments].sort((a, b) => new Date(b.createdAt || b.updatedAt).getTime() - new Date(a.createdAt || a.updatedAt).getTime());
+
+    const recentQuizzes = [];
+    const recentAssignments = [];
+    const recentExams = [];
+
+    for (const row of recentRows) {
+      const subjectName = row.class.subject || row.class.name || "Unknown Subject";
+      const uploadTime = row.createdAt || row.updatedAt || new Date();
+      const quizFields = [row.quiz6, row.quiz5, row.quiz4, row.quiz3, row.quiz2, row.quiz1];
+      const assignmentFields = [row.assignment5, row.assignment4, row.assignment3, row.assignment2, row.assignment1];
+
+      for (const score of quizFields) {
+        const percent = toPercent(score);
+        if (percent !== null && recentQuizzes.length < 3) {
+          recentQuizzes.push({
+            subject: subjectName,
+            score: `${percent}%`,
+            submittedAt: formatRelativePredictionLabel(uploadTime),
+          });
+        }
+        if (recentQuizzes.length >= 3) break;
+      }
+
+      for (let i = 0; i < assignmentFields.length; i += 1) {
+        const score = assignmentFields[i];
+        const percent = toPercent(score);
+        if (percent !== null && recentAssignments.length < 3) {
+          recentAssignments.push({
+            subject: subjectName,
+            name: `Assignment ${5 - i}`,
+            score: `${percent}%`,
+            submittedAt: formatRelativePredictionLabel(uploadTime),
+          });
+        }
+        if (recentAssignments.length >= 3) break;
+      }
+
+      const mids = Number(row.midsPercentage);
+      if (Number.isFinite(mids) && recentExams.length < 3) {
+        const percent = Math.max(0, Math.min(100, roundTo(mids)));
+        const marksOutOf50 = roundTo((percent / 100) * 50);
+        recentExams.push({
+          subject: subjectName,
+          type: "MID",
+          score: `${percent}% (${marksOutOf50}/50)`,
+          submittedAt: formatRelativePredictionLabel(uploadTime),
+        });
+      }
+
+      if (recentQuizzes.length >= 3 && recentAssignments.length >= 3 && recentExams.length >= 3) {
+        break;
+      }
+    }
+
+    return {
+      student: {
+        id: selectedStudent.publicId,
+        name: selectedStudent.name,
+        regNo: selectedStudent.regNo,
+        semester: targetSemester,
+      },
+      performance: {
+        averageScore: roundTo(averageScore),
+        classRank: `${classRank} out of ${classSize}`,
+        percentileStanding: `Top ${roundTo(percentile)}% - ${standing}`,
+        improvementRate: `${roundTo(improvementRate)}% ${improvementRate > 0 ? "↑" : improvementRate < 0 ? "↓" : "→"}`,
+        strongSubjects: `${strongSubjects} out of ${enrollments.length} (A or A+ grades)`,
+      },
+      recentActivity: {
+        quizzes: recentQuizzes,
+        assignments: recentAssignments,
+        exams: recentExams,
+      },
+    };
+  }
+
+  static async getSelfStudentPerformanceOverview(actor, filters = {}) {
+    if (!actor?.userId || String(actor.role || "").toUpperCase() !== "STUDENT") {
+      throw new Error("Forbidden: student access required");
+    }
+
+    const requester = await prisma.user.findUnique({
+      where: { id: Number(actor.userId) },
+      select: { email: true },
+    });
+
+    if (!requester?.email) {
+      throw new Error("Student account email is required");
+    }
+
+    const studentRecord = await prisma.studentRecord.findFirst({
+      where: {
+        email: {
+          equals: requester.email,
+          mode: "insensitive",
+        },
+      },
+      select: {
+        publicId: true,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    });
+
+    if (!studentRecord) {
+      throw new Error("Student record not found");
+    }
+
+    return this.getStudentPerformanceOverview(studentRecord.publicId, actor, filters);
+  }
+
   static async getStudentPredictionDetails(predictionId, studentId, teacherId) {
     const predictionIdentifierWhere = this.buildIdentifierWhere(predictionId);
     const studentIdentifierWhere = this.buildIdentifierWhere(studentId);
@@ -962,6 +2169,10 @@ export class TeacherService {
             studentRecord: {
               select: {
                 publicId: true,
+                expectedCgpa: true,
+                classRank: true,
+                overallRiskLevel: true,
+                semesterAvgScore: true,
               },
             },
           },
@@ -996,6 +2207,10 @@ export class TeacherService {
         passProbability: Number(entry.passProbability.toFixed(4)),
         modelConfidence: Number(entry.modelConfidence.toFixed(4)),
         riskLevel: entry.riskLevel,
+        expectedCgpa: entry.studentRecord?.expectedCgpa || null,
+        classRank: entry.studentRecord?.classRank || null,
+        overallRiskLevel: entry.studentRecord?.overallRiskLevel || null,
+        semesterAvgScore: entry.studentRecord?.semesterAvgScore || null,
         suggestions: entry.suggestions,
       })),
     };
@@ -1038,6 +2253,9 @@ export class TeacherService {
         studentId: student.publicId,
         name: student.name,
         regNo: student.regNo,
+        email: student.email,
+        phoneNumber: student.phoneNumber,
+        address: student.address,
         quiz1: student.quiz1,
         quiz2: student.quiz2,
         quiz3: student.quiz3,
@@ -1054,6 +2272,103 @@ export class TeacherService {
         createdAt: student.createdAt,
         updatedAt: student.updatedAt,
       })),
+    };
+  }
+
+  static async getClassPerformanceOverview(classId, teacherId) {
+    const teacherClass = await this.assertTeacherClass(classId, teacherId);
+
+    const [students, predictionRuns] = await Promise.all([
+      prisma.studentRecord.findMany({
+        where: {
+          classId: teacherClass.id,
+        },
+        select: {
+          regNo: true,
+          overallRiskLevel: true,
+          semesterAvgScore: true,
+        },
+      }),
+      prisma.predictionRun.findMany({
+        where: {
+          classId: teacherClass.id,
+        },
+        orderBy: [
+          { generatedAt: "desc" },
+          { id: "desc" },
+        ],
+        take: 2,
+        select: {
+          id: true,
+          publicId: true,
+          generatedAt: true,
+          entries: {
+            select: {
+              predictedScore: true,
+              riskLevel: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const totalStudents = students.length;
+    const latestRun = predictionRuns[0] || null;
+    const previousRun = predictionRuns[1] || null;
+
+    const averageScoreFromRun = (run) => {
+      if (!run?.entries?.length) {
+        return null;
+      }
+
+      const total = run.entries.reduce((sum, entry) => sum + Number(entry.predictedScore || 0), 0);
+      return total / run.entries.length;
+    };
+
+    const latestAvg = averageScoreFromRun(latestRun);
+    const previousAvg = averageScoreFromRun(previousRun);
+
+    const avgPerformance = Number.isFinite(latestAvg)
+      ? roundTo(latestAvg)
+      : roundTo(
+          students.length
+            ? students.reduce((sum, row) => sum + Number(row.semesterAvgScore || 0), 0) / students.length
+            : 0
+        );
+
+    const studentsAtRisk = latestRun?.entries?.length
+      ? latestRun.entries.filter((entry) => {
+          const risk = String(entry.riskLevel || "").toUpperCase();
+          return risk === "HIGH" || risk === "MID";
+        }).length
+      : students.filter((row) => {
+          const risk = String(row.overallRiskLevel || "").toUpperCase();
+          return risk === "HIGH" || risk === "MID";
+        }).length;
+
+    const improvementRate = Number.isFinite(latestAvg) && Number.isFinite(previousAvg)
+      ? roundTo(percentChange(latestAvg, previousAvg))
+      : 0;
+
+    return {
+      class: {
+        id: teacherClass.publicId,
+        name: teacherClass.name,
+        subject: teacherClass.subject,
+        section: teacherClass.section,
+        semester: teacherClass.semester,
+      },
+      metrics: {
+        totalStudents,
+        studentsAtRisk,
+        avgPerformance,
+        improvementRate,
+      },
+      baseline: {
+        latestPredictionRunId: latestRun?.publicId || null,
+        latestPredictionAt: latestRun?.generatedAt || null,
+        previousPredictionAt: previousRun?.generatedAt || null,
+      },
     };
   }
 
@@ -1179,6 +2494,8 @@ export class TeacherService {
         })),
       });
 
+      await this.refreshSemesterStudentAnalyticsFromPredictions(teacherClass.semester, { tx });
+
       const entries = await tx.predictionEntry.findMany({
         where: { predictionRunId: predictionRun.id },
         orderBy: { predictedScore: "desc" },
@@ -1186,6 +2503,10 @@ export class TeacherService {
           studentRecord: {
             select: {
               publicId: true,
+              expectedCgpa: true,
+              classRank: true,
+              overallRiskLevel: true,
+              semesterAvgScore: true,
             },
           },
         },
@@ -1208,6 +2529,10 @@ export class TeacherService {
           passProbability: entry.passProbability,
           modelConfidence: entry.modelConfidence,
           riskLevel: entry.riskLevel,
+          expectedCgpa: entry.studentRecord?.expectedCgpa || null,
+          classRank: entry.studentRecord?.classRank || null,
+          overallRiskLevel: entry.studentRecord?.overallRiskLevel || null,
+          semesterAvgScore: entry.studentRecord?.semesterAvgScore || null,
           suggestions: entry.suggestions,
           createdAt: entry.createdAt,
           updatedAt: entry.updatedAt,
@@ -1306,6 +2631,8 @@ export class TeacherService {
             data: {
               name: student.name,
               regNo: student.regNo,
+              phoneNumber: student.phoneNumber,
+              address: student.address,
               quiz1: student.quiz1,
               quiz2: student.quiz2,
               quiz3: student.quiz3,
@@ -1329,6 +2656,9 @@ export class TeacherService {
               classId: teacherClass.id,
               name: student.name,
               regNo: student.regNo,
+              email: student.email,
+              phoneNumber: student.phoneNumber,
+              address: student.address,
               quiz1: student.quiz1,
               quiz2: student.quiz2,
               quiz3: student.quiz3,
@@ -1353,6 +2683,9 @@ export class TeacherService {
         orderBy: studentRankingOrder,
       });
 
+      const createdStudentsOnly = upsertedStudents.filter((s) => !existingIds.has(s.id));
+      await this.ensureStudentUsersExist(createdStudentsOnly, { tx });
+
       return {
         class: {
           ...classUpdateResult,
@@ -1373,22 +2706,49 @@ export class TeacherService {
     const teacherClass = await this.assertTeacherClass(classId, teacherId);
     const normalized = this.normalizeStudentRow(studentData);
 
-    const student = await prisma.studentRecord.upsert({
+    const existing = await prisma.studentRecord.findUnique({
       where: {
         classId_regNo: {
           classId: teacherClass.id,
           regNo: normalized.regNo,
         },
       },
-      update: {
-        ...normalized,
-      },
-      create: {
-        publicId: createId(),
-        classId: teacherClass.id,
-        ...normalized,
-      },
     });
+
+    let student;
+    if (existing) {
+      student = await prisma.studentRecord.update({
+        where: { id: existing.id },
+        data: {
+          name: normalized.name,
+          phoneNumber: normalized.phoneNumber,
+          address: normalized.address,
+          quiz1: normalized.quiz1,
+          quiz2: normalized.quiz2,
+          quiz3: normalized.quiz3,
+          quiz4: normalized.quiz4,
+          quiz5: normalized.quiz5,
+          quiz6: normalized.quiz6,
+          assignment1: normalized.assignment1,
+          assignment2: normalized.assignment2,
+          assignment3: normalized.assignment3,
+          assignment4: normalized.assignment4,
+          assignment5: normalized.assignment5,
+          midsPercentage: normalized.midsPercentage,
+          attendancePercentage: normalized.attendancePercentage,
+        },
+      });
+    } else {
+      student = await prisma.studentRecord.create({
+        data: {
+          publicId: createId(),
+          classId: teacherClass.id,
+          ...normalized,
+        },
+      });
+
+      await this.ensureStudentUsersExist([student]);
+    }
 
     return {
       ...student,
@@ -1403,31 +2763,64 @@ export class TeacherService {
       throw new Error("students must be a non-empty array");
     }
 
-    return prisma.$transaction(
-      students.map((student) => {
-        const normalized = this.normalizeStudentRow(student);
+    return prisma.$transaction(async (tx) => {
+      const normalizedRows = students.map((student) => this.normalizeStudentRow(student));
+      const results = [];
+      const createdStudents = [];
 
-        return prisma.studentRecord.upsert({
+      for (const normalized of normalizedRows) {
+        const existing = await tx.studentRecord.findUnique({
           where: {
             classId_regNo: {
               classId: teacherClass.id,
               regNo: normalized.regNo,
             },
           },
-          update: {
-            ...normalized,
-          },
-          create: {
-            publicId: createId(),
-            classId: teacherClass.id,
-            ...normalized,
-          },
         });
-      })
-    ).then((rows) => rows.map((student) => ({
-      ...student,
-      id: student.publicId,
-    })));
+
+        if (existing) {
+          const updated = await tx.studentRecord.update({
+            where: { id: existing.id },
+            data: {
+              name: normalized.name,
+              phoneNumber: normalized.phoneNumber,
+              address: normalized.address,
+              quiz1: normalized.quiz1,
+              quiz2: normalized.quiz2,
+              quiz3: normalized.quiz3,
+              quiz4: normalized.quiz4,
+              quiz5: normalized.quiz5,
+              quiz6: normalized.quiz6,
+              assignment1: normalized.assignment1,
+              assignment2: normalized.assignment2,
+              assignment3: normalized.assignment3,
+              assignment4: normalized.assignment4,
+              assignment5: normalized.assignment5,
+              midsPercentage: normalized.midsPercentage,
+              attendancePercentage: normalized.attendancePercentage,
+            },
+          });
+          results.push(updated);
+        } else {
+          const created = await tx.studentRecord.create({
+            data: {
+              publicId: createId(),
+              classId: teacherClass.id,
+              ...normalized,
+            },
+          });
+          createdStudents.push(created);
+          results.push(created);
+        }
+      }
+
+      await this.ensureStudentUsersExist(createdStudents, { tx });
+
+      return results.map((student) => ({
+        ...student,
+        id: student.publicId,
+      }));
+    });
   }
 
   static mapExcelRowToStudent(rawRow) {
@@ -1506,6 +2899,9 @@ export class TeacherService {
       studentIdInt: student.id,
       name: student.name,
       regNo: student.regNo,
+      email: student.email,
+      phoneNumber: student.phoneNumber,
+      address: student.address,
       quiz1: student.quiz1,
       quiz2: student.quiz2,
       quiz3: student.quiz3,
