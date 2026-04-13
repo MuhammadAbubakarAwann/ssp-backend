@@ -1316,6 +1316,17 @@ export class TeacherService {
     });
 
     const reports = predictionRuns.map((run) => {
+      const combinationName = [
+        [run.programCode, run.semesterNumber, run.section]
+          .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+          .join("-"),
+        [run.courseCode, run.courseName]
+          .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+          .join(" "),
+      ]
+        .filter((v) => v)
+        .join(" ");
+
       const summary = run.entries.reduce(
         (acc, entry) => {
           const perf = String(entry.performance || "").toUpperCase();
@@ -1333,11 +1344,12 @@ export class TeacherService {
       const avgScore = analyzedCount ? summary.totalScore / analyzedCount : 0;
 
       return {
+        predictionId: run.publicId,
         reportCode: run.reportCode || run.publicId,
         type: run.scope,
         class: {
           id: run.class.publicId,
-          name: run.class.name,
+          name: combinationName || run.class.name,
         },
         summary: {
           high: summary.high,
@@ -2467,22 +2479,35 @@ export class TeacherService {
       throw new Error("Prediction not found in this class");
     }
 
+    const classMetadata = {
+      programCode: prediction.programCode || teacherClass.programCode,
+      semesterNumber: prediction.semesterNumber || teacherClass.semesterNumber,
+      section: prediction.section || teacherClass.section,
+      courseCode: prediction.courseCode || teacherClass.courseCode,
+      courseName: prediction.courseName || teacherClass.courseName,
+    };
+
+    const formattedClassName = [
+      [classMetadata.programCode, classMetadata.semesterNumber, classMetadata.section]
+        .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+        .join("-"),
+      [classMetadata.courseCode, classMetadata.courseName]
+        .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+        .join(" "),
+    ]
+      .filter((v) => v)
+      .join(" ");
+
     return {
       class: {
         id: teacherClass.publicId,
-        name: teacherClass.name,
+        name: formattedClassName || teacherClass.name,
       },
       prediction: {
         id: prediction.publicId,
-        title: prediction.title,
+        title: formattedClassName || prediction.title,
         scope: prediction.scope,
-        classMetadata: {
-          programCode: prediction.programCode,
-          semesterNumber: prediction.semesterNumber,
-          section: prediction.section,
-          courseCode: prediction.courseCode,
-          courseName: prediction.courseName,
-        },
+        classMetadata,
         date: prediction.generatedAt,
         status: "completed",
         studentsAnalyzed: prediction.entries.length,
