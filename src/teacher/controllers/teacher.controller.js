@@ -99,6 +99,56 @@ export class TeacherController {
     }
   }
 
+  static async getCatalogPrograms(req, res) {
+    try {
+      const data = await TeacherService.getCatalogProgramsList();
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch programs",
+      });
+    }
+  }
+
+  static async getCatalogSemesters(req, res) {
+    try {
+      const filters = req.validatedQuery || req.query;
+      const data = await TeacherService.getCatalogSemesters(filters.programCode);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch semesters",
+      });
+    }
+  }
+
+  static async getCatalogSubjects(req, res) {
+    try {
+      const filters = req.validatedQuery || req.query;
+      const data = await TeacherService.getCatalogSubjects(filters.programCode, filters.semesterNumber);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch subjects",
+      });
+    }
+  }
+
   static async getClassStudentsPredictionStatus(req, res) {
     try {
       const teacherId = req.user.userId;

@@ -110,6 +110,32 @@ router.get(
   validateQuery(teacherValidation.studentRecommendationsQuery),
   TeacherController.getStudentRecommendations
 );
+router.get(
+  "/catalog/programs",
+  authenticate,
+  authorizeRoles("TEACHER", "ADMIN"),
+  TeacherController.getCatalogPrograms
+);
+router.get(
+  "/catalog/class-names",
+  authenticate,
+  authorizeRoles("TEACHER", "ADMIN"),
+  TeacherController.getCatalogPrograms
+);
+router.get(
+  "/catalog/semesters",
+  authenticate,
+  authorizeRoles("TEACHER", "ADMIN"),
+  validateQuery(teacherValidation.catalogSemestersQuery),
+  TeacherController.getCatalogSemesters
+);
+router.get(
+  "/catalog/subjects",
+  authenticate,
+  authorizeRoles("TEACHER", "ADMIN"),
+  validateQuery(teacherValidation.catalogSubjectsQuery),
+  TeacherController.getCatalogSubjects
+);
 
 router.use(authenticate, authorizeRoles("TEACHER"));
 

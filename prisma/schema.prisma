@@ -25,20 +25,57 @@ model User {
 }
 
 model TeacherClass {
-  id          Int             @id @default(autoincrement())
-  publicId    String          @unique @default(cuid())
-  name        String
-  subject     String?
-  section     String?
-  semester    String?
-  teacherId   Int
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
-  teacher     User            @relation(fields: [teacherId], references: [id], onDelete: Cascade)
-  students    StudentRecord[]
-  predictions PredictionRun[]
+  id             Int             @id @default(autoincrement())
+  publicId       String          @unique @default(cuid())
+  name           String
+  subject        String?
+  section        String?
+  semester       String?
+  programCode    String?
+  programName    String?
+  courseCode     String?
+  courseName     String?
+  semesterNumber Int?
+  courseCatalogId Int?
+  teacherId      Int
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  teacher        User            @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  courseCatalog  CourseCatalog?  @relation(fields: [courseCatalogId], references: [id], onDelete: SetNull)
+  students       StudentRecord[]
+  predictions    PredictionRun[]
 
   @@index([teacherId])
+  @@index([programCode, semesterNumber])
+  @@index([programCode, courseCode])
+  @@index([courseCatalogId])
+}
+
+model CourseCatalog {
+  id             Int           @id @default(autoincrement())
+  publicId       String        @unique @default(cuid())
+  programCode    ProgramCode
+  semesterNumber Int
+  courseCode     String
+  courseTitle    String
+  isActive       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  classes        TeacherClass[]
+
+  @@unique([programCode, semesterNumber, courseCode])
+  @@index([programCode, semesterNumber])
+}
+
+model AcademicProgram {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
 }
 
 model StudentRecord {
@@ -77,20 +114,27 @@ model StudentRecord {
 }
 
 model PredictionRun {
-  id          Int             @id @default(autoincrement())
-  publicId    String          @unique @default(cuid())
-  reportCode  String?         @unique
-  classId     Int
-  title       String
-  scope       PredictionScope
-  generatedAt DateTime        @default(now())
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
+  id              Int             @id @default(autoincrement())
+  publicId        String          @unique @default(cuid())
+  reportCode      String?         @unique
+  classId         Int
+  title           String
+  scope           PredictionScope
+  programCode     String?
+  semesterNumber  Int?
+  section         String?
+  courseCode      String?
+  courseName      String?
+  generatedAt     DateTime        @default(now())
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
-  class       TeacherClass    @relation(fields: [classId], references: [id], onDelete: Cascade)
-  entries     PredictionEntry[]
+  class           TeacherClass    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  entries         PredictionEntry[]
 
   @@index([classId])
+  @@index([programCode, semesterNumber])
+  @@index([courseCode])
 }
 
 model PredictionEntry {
@@ -138,4 +182,9 @@ enum RiskLevel {
   LOW
   MID
   HIGH
+}
+
+enum ProgramCode {
+  BSCS
+  BSSE
 }

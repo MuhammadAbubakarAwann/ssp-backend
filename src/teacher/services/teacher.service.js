@@ -417,6 +417,267 @@ export class TeacherService {
     }
   }
 
+  static getCatalogPrograms() {
+    return [
+      { code: "BSCS", name: "Bachelor of Science in Computer Science" },
+      { code: "BSSE", name: "Bachelor of Science in Software Engineering" },
+    ];
+  }
+
+  static normalizeProgramCode(value) {
+    if (value === undefined || value === null || value === "") {
+      return null;
+    }
+
+    return String(value).trim().toUpperCase();
+  }
+
+  static async resolveProgramName(programCode, db = prisma) {
+    if (!programCode) {
+      return null;
+    }
+
+    const program = await db.academicProgram.findFirst({
+      where: {
+        code: programCode,
+        isActive: true,
+      },
+      select: {
+        name: true,
+      },
+    });
+
+    return program?.name || null;
+  }
+
+  static parseSemesterNumber(value) {
+    if (value === undefined || value === null || value === "") {
+      return null;
+    }
+
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 8) {
+      throw new Error("semesterNumber must be an integer between 1 and 8");
+    }
+
+    return parsed;
+  }
+
+  static async resolveClassMetadata(classData, db = prisma) {
+    const programCode = this.normalizeProgramCode(classData.programCode);
+    const semesterNumber = this.parseSemesterNumber(classData.semesterNumber);
+    const courseCatalogId = classData.courseCatalogId === undefined || classData.courseCatalogId === null || classData.courseCatalogId === ""
+      ? null
+      : String(classData.courseCatalogId).trim();
+    const courseCode = classData.courseCode === undefined || classData.courseCode === null || classData.courseCode === ""
+      ? null
+      : String(classData.courseCode).trim().toUpperCase();
+    const courseName = classData.courseName === undefined || classData.courseName === null || classData.courseName === ""
+      ? null
+      : String(classData.courseName).trim();
+    const subject = classData.subject === undefined || classData.subject === null || classData.subject === ""
+      ? null
+      : String(classData.subject).trim();
+    const requestedName = classData.name === undefined || classData.name === null || classData.name === ""
+      ? null
+      : String(classData.name).trim();
+
+    let selectedCourse = null;
+    if (courseCatalogId !== null) {
+      const identifierWhere = this.buildIdentifierWhere(courseCatalogId);
+      selectedCourse = await db.courseCatalog.findFirst({
+        where: {
+          ...identifierWhere,
+          isActive: true,
+        },
+      });
+    } else if (programCode && semesterNumber !== null && courseCode) {
+      selectedCourse = await db.courseCatalog.findFirst({
+        where: {
+          programCode,
+          semesterNumber,
+          courseCode,
+          isActive: true,
+        },
+      });
+    }
+
+    const resolvedProgramCode = selectedCourse?.programCode || programCode;
+    const resolvedProgramName = await this.resolveProgramName(resolvedProgramCode, db);
+    const resolvedCourseCode = selectedCourse?.courseCode || courseCode;
+    const resolvedCourseName = selectedCourse?.courseTitle || courseName;
+    const resolvedSubject = selectedCourse
+      ? `${selectedCourse.courseCode} ${selectedCourse.courseTitle}`
+      : (subject || (resolvedCourseCode && resolvedCourseName ? `${resolvedCourseCode} ${resolvedCourseName}` : null));
+
+    return {
+      programCode: resolvedProgramCode,
+      programName: resolvedProgramName || requestedName || resolvedProgramCode,
+      courseCode: resolvedCourseCode,
+      courseName: resolvedCourseName,
+      subject: resolvedSubject,
+      semesterNumber,
+      semester: classData.semester === undefined || classData.semester === null || classData.semester === ""
+        ? (semesterNumber !== null ? `Semester ${semesterNumber}` : null)
+        : String(classData.semester).trim(),
+      courseCatalogId: selectedCourse?.id || null,
+    };
+  }
+
+  static formatTeacherClassResponse(teacherClass, students = null) {
+    const response = {
+      id: teacherClass.publicId,
+      name: teacherClass.name,
+      subject: teacherClass.subject,
+      section: teacherClass.section,
+      semester: teacherClass.semester,
+      programCode: teacherClass.programCode,
+      programName: teacherClass.programName,
+      courseCode: teacherClass.courseCode,
+      courseName: teacherClass.courseName,
+      teacherId: teacherClass.teacherId,
+      createdAt: teacherClass.createdAt,
+      updatedAt: teacherClass.updatedAt,
+    };
+
+    if (students !== null) {
+      const uniqueStudents = Array.from(
+        new Map(students.map((student) => [student.id, student])).values()
+      );
+
+      response.totalStudents = uniqueStudents.length;
+      response.topStudents = sortByRegistrationSuffix(uniqueStudents)
+        .slice(0, 6)
+        .map((student) => ({
+          ...student,
+          id: student.publicId,
+        }));
+    }
+
+    return response;
+  }
+
+  static async getCatalogProgramsList() {
+    const programs = await prisma.academicProgram.findMany({
+      where: {
+        isActive: true,
+      },
+      orderBy: {
+        code: "asc",
+      },
+      select: {
+        code: true,
+        name: true,
+      },
+    });
+
+    return {
+      programs,
+    };
+  }
+
+  static async getCatalogSemesters(programCode) {
+    const normalizedProgram = String(programCode || "").trim().toUpperCase();
+    if (!normalizedProgram) {
+      throw new Error("programCode is required");
+    }
+
+    const program = await prisma.academicProgram.findFirst({
+      where: {
+        code: normalizedProgram,
+        isActive: true,
+      },
+      select: {
+        code: true,
+        name: true,
+      },
+    });
+
+    if (!program) {
+      throw new Error(`Program not found: ${normalizedProgram}`);
+    }
+
+    const semesters = Array.from({ length: 8 }, (_, index) => {
+      const value = index + 1;
+      return {
+        semesterNumber: value,
+        label: `Semester ${value}`,
+      };
+    });
+
+    return {
+      programCode: program.code,
+      programName: program.name,
+      semesters,
+    };
+  }
+
+  static async getCatalogSubjects(programCode, semesterNumber) {
+    const normalizedProgram = String(programCode || "").trim().toUpperCase();
+    const normalizedSemester = this.parseSemesterNumber(semesterNumber);
+
+    if (!normalizedProgram || !normalizedSemester) {
+      throw new Error("programCode and semesterNumber are required");
+    }
+
+    const program = await prisma.academicProgram.findFirst({
+      where: {
+        code: normalizedProgram,
+        isActive: true,
+      },
+      select: {
+        code: true,
+        name: true,
+      },
+    });
+
+    if (!program) {
+      throw new Error(`Program not found: ${normalizedProgram}`);
+    }
+
+    const supportsSeededCourses = this.getCatalogPrograms().some((item) => item.code === normalizedProgram);
+    if (!supportsSeededCourses) {
+      return {
+        programCode: program.code,
+        programName: program.name,
+        semesterNumber: normalizedSemester,
+        message: `No subjects/courses found for ${program.code} in semester ${normalizedSemester}`,
+        subjects: [],
+      };
+    }
+
+    const subjects = await prisma.courseCatalog.findMany({
+      where: {
+        programCode: normalizedProgram,
+        semesterNumber: normalizedSemester,
+        isActive: true,
+      },
+      orderBy: {
+        courseCode: "asc",
+      },
+      select: {
+        publicId: true,
+        courseCode: true,
+        courseTitle: true,
+      },
+    });
+
+    return {
+      programCode: program.code,
+      programName: program.name,
+      semesterNumber: normalizedSemester,
+      message: subjects.length
+        ? null
+        : `No subjects/courses found for ${program.code} in semester ${normalizedSemester}`,
+      subjects: subjects.map((item) => ({
+        id: item.publicId,
+        courseCode: item.courseCode,
+        courseName: item.courseTitle,
+        subject: `${item.courseCode} ${item.courseTitle}`,
+      })),
+    };
+  }
+
   static async createClassWithStudents(classData, students, teacherId) {
     if (!Array.isArray(students) || students.length === 0) {
       throw new Error("students must be a non-empty array");
@@ -436,13 +697,26 @@ export class TeacherService {
     });
 
     return prisma.$transaction(async (tx) => {
+      const classMetadata = await this.resolveClassMetadata(classData, tx);
+      const classSection = classData.section ? String(classData.section).trim() : null;
+
+      if (!classMetadata.programName) {
+        throw new Error("programCode or name is required");
+      }
+
       const teacherClass = await tx.teacherClass.create({
         data: {
           publicId: createId(),
-          name: classData.name,
-          subject: classData.subject || null,
-          section: classData.section || null,
-          semester: classData.semester || null,
+          name: classMetadata.programName,
+          subject: classMetadata.subject,
+          section: classSection,
+          semester: classMetadata.semester,
+          programCode: classMetadata.programCode,
+          programName: classMetadata.programName,
+          courseCode: classMetadata.courseCode,
+          courseName: classMetadata.courseName,
+          semesterNumber: classMetadata.semesterNumber,
+          courseCatalogId: classMetadata.courseCatalogId,
           teacherId,
         },
       });
@@ -463,10 +737,7 @@ export class TeacherService {
       await this.ensureStudentUsersExist(createdStudents, { tx });
 
       return {
-        class: {
-          ...teacherClass,
-          id: teacherClass.publicId,
-        },
+        class: this.formatTeacherClassResponse(teacherClass),
         count: createdStudents.length,
         students: sortByRegistrationSuffix(createdStudents).map((student) => ({
           ...student,
@@ -530,21 +801,31 @@ export class TeacherService {
   }
 
   static async createClass(data, teacherId) {
+    const classMetadata = await this.resolveClassMetadata(data);
+    const classSection = data.section ? String(data.section).trim() : null;
+
+    if (!classMetadata.programName) {
+      throw new Error("programCode or name is required");
+    }
+
     const teacherClass = await prisma.teacherClass.create({
       data: {
         publicId: createId(),
-        name: data.name,
-        subject: data.subject || null,
-        section: data.section || null,
-        semester: data.semester || null,
+        name: classMetadata.programName,
+        subject: classMetadata.subject,
+        section: classSection,
+        semester: classMetadata.semester,
+        programCode: classMetadata.programCode,
+        programName: classMetadata.programName,
+        courseCode: classMetadata.courseCode,
+        courseName: classMetadata.courseName,
+        semesterNumber: classMetadata.semesterNumber,
+        courseCatalogId: classMetadata.courseCatalogId,
         teacherId,
       },
     });
 
-    return {
-      ...teacherClass,
-      id: teacherClass.publicId,
-    };
+    return this.formatTeacherClassResponse(teacherClass);
   }
 
   static async getClasses(teacherId) {
@@ -562,23 +843,16 @@ export class TeacherService {
       },
     });
 
-    return classes.map((teacherClass) => ({
-      id: teacherClass.publicId,
-      name: teacherClass.name,
-      subject: teacherClass.subject,
-      section: teacherClass.section,
-      semester: teacherClass.semester,
-      teacherId: teacherClass.teacherId,
-      createdAt: teacherClass.createdAt,
-      updatedAt: teacherClass.updatedAt,
-      totalStudents: teacherClass._count.students,
-      topStudents: sortByRegistrationSuffix(teacherClass.students)
-        .slice(0, 6)
-        .map((student) => ({
-        ...student,
-        id: student.publicId,
-      })),
-    }));
+    return classes.map((teacherClass) => {
+      const uniqueStudents = Array.from(
+        new Map(teacherClass.students.map((student) => [student.id, student])).values()
+      );
+
+      return {
+        ...this.formatTeacherClassResponse(teacherClass, uniqueStudents),
+        totalStudents: teacherClass._count.students,
+      };
+    });
   }
 
   static async getClassNames(teacherId) {
@@ -587,14 +861,39 @@ export class TeacherService {
       orderBy: { createdAt: "desc" },
       select: {
         publicId: true,
-        name: true,
+        subject: true,
+        courseCode: true,
+        courseName: true,
+        section: true,
+        semester: true,
+        programCode: true,
+        semesterNumber: true,
       },
     });
 
-    return classes.map((item) => ({
-      id: item.publicId,
-      name: item.name,
-    }));
+    return classes.map((item) => {
+      const baseParts = [item.programCode, item.semesterNumber, item.section]
+        .filter((v) => v !== null && v !== undefined)
+        .join("-");
+      
+      const courseParts = [item.courseCode, item.courseName]
+        .filter((v) => v !== null && v !== undefined)
+        .join(" ");
+      
+      const formattedName = [baseParts, courseParts]
+        .filter((v) => v)
+        .join(" ");
+
+      return {
+        id: item.publicId,
+        name: formattedName,
+        subject: item.subject,
+        courseCode: item.courseCode,
+        courseName: item.courseName,
+        semester: item.semester,
+        section: item.section,
+      };
+    });
   }
 
   static async getClassStudentsPredictionStatus(classId, teacherId) {
@@ -618,6 +917,11 @@ export class TeacherService {
       class: {
         id: teacherClass.publicId,
         name: teacherClass.name,
+        subject: teacherClass.subject,
+        courseCode: teacherClass.courseCode,
+        courseName: teacherClass.courseName,
+        section: teacherClass.section,
+        semester: teacherClass.semester,
       },
       students: sortByRegistrationSuffix(students).map((student) => ({
         id: student.publicId,
@@ -632,6 +936,7 @@ export class TeacherService {
 
   static async getPredictionHistory(teacherId, filters) {
     const scope = String(filters.scope || "").trim().toUpperCase();
+    const requestedNameFilter = String(filters.name || "").trim();
 
     if (!["CLASS", "SELECTED"].includes(scope)) {
       throw new Error("scope must be CLASS or SELECTED");
@@ -712,7 +1017,29 @@ export class TeacherService {
       },
     });
 
+    const formatClassCombinationName = (run) => {
+      const base = [run.programCode, run.semesterNumber, run.section]
+        .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+        .join("-");
+      const course = [run.courseCode, run.courseName]
+        .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+        .join(" ");
+      return [base, course].filter((v) => v).join(" ");
+    };
+
+    const normalizeFilterKey = (value) => String(value || "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .toLowerCase();
+
+    const normalizedRequestedName = normalizeFilterKey(requestedNameFilter);
+    const filteredRuns = normalizedRequestedName
+      ? predictionRuns.filter((run) => normalizeFilterKey(formatClassCombinationName(run)) === normalizedRequestedName)
+      : predictionRuns;
+
     const summarizeRun = (run) => {
+      const combinationName = formatClassCombinationName(run) || run.class.name;
+
       if (scope === "SELECTED" && selectedStudent) {
         const entry = run.entries.find((item) => item.studentRecord?.publicId === selectedStudent.publicId);
 
@@ -722,11 +1049,20 @@ export class TeacherService {
 
         return {
           id: run.publicId,
-          name: entry.studentName,
+          name: combinationName,
+          studentName: entry.studentName,
           title: run.title,
+          className: formatClassCombinationName(run),
           class: {
             id: run.class.publicId,
             name: run.class.name,
+          },
+          classMetadata: {
+            programCode: run.programCode,
+            semesterNumber: run.semesterNumber,
+            section: run.section,
+            courseCode: run.courseCode,
+            courseName: run.courseName,
           },
           date: run.generatedAt,
           status: "completed",
@@ -745,11 +1081,19 @@ export class TeacherService {
 
         return {
           id: run.publicId,
-          name: run.title,
+          name: combinationName,
           title: run.title,
+          className: formatClassCombinationName(run),
           class: {
             id: run.class.publicId,
             name: run.class.name,
+          },
+          classMetadata: {
+            programCode: run.programCode,
+            semesterNumber: run.semesterNumber,
+            section: run.section,
+            courseCode: run.courseCode,
+            courseName: run.courseName,
           },
           date: run.generatedAt,
           status: "completed",
@@ -767,11 +1111,19 @@ export class TeacherService {
 
       return {
         id: run.publicId,
-        name: run.class.name,
+        name: combinationName,
         title: run.title,
+        className: formatClassCombinationName(run),
         class: {
           id: run.class.publicId,
           name: run.class.name,
+        },
+        classMetadata: {
+          programCode: run.programCode,
+          semesterNumber: run.semesterNumber,
+          section: run.section,
+          courseCode: run.courseCode,
+          courseName: run.courseName,
         },
         date: run.generatedAt,
         status: "completed",
@@ -783,15 +1135,15 @@ export class TeacherService {
     };
 
     const predictions = [];
-    for (let index = 0; index < predictionRuns.length && predictions.length < 6; index += 1) {
-      const currentRun = predictionRuns[index];
+    for (let index = 0; index < filteredRuns.length && predictions.length < 6; index += 1) {
+      const currentRun = filteredRuns[index];
       const currentSummary = summarizeRun(currentRun);
 
       if (!currentSummary) {
         continue;
       }
 
-      const previousRun = predictionRuns[index + 1];
+      const previousRun = filteredRuns[index + 1];
       if (previousRun) {
         const previousSummary = summarizeRun(previousRun);
 
@@ -818,7 +1170,7 @@ export class TeacherService {
           }
         : null,
       scope,
-      totalCount,
+      totalCount: normalizedRequestedName ? filteredRuns.length : totalCount,
       count: predictions.length,
       predictions,
     };
@@ -1159,79 +1511,10 @@ export class TeacherService {
       throw new Error("semester is required for this student because class semester is missing");
     }
 
-    await this.refreshSemesterStudentAnalyticsFromPredictions(targetSemester);
-
-    const studentEnrollments = await prisma.studentRecord.findMany({
-      where: {
-        regNo: selectedStudent.regNo,
-        ...(role === "STUDENT"
-          ? {
-              email: {
-                equals: selectedStudent.email,
-                mode: "insensitive",
-              },
-            }
-          : {}),
-        class: {
-          semester: targetSemester,
-        },
-      },
-      select: {
-        publicId: true,
-        name: true,
-        regNo: true,
-        email: true,
-        phoneNumber: true,
-        address: true,
-        attendancePercentage: true,
-        expectedCgpa: true,
-        overallRiskLevel: true,
-        classRank: true,
-        semesterAvgScore: true,
-        class: {
-          select: {
-            publicId: true,
-            name: true,
-            subject: true,
-            semester: true,
-          },
-        },
-      },
-      orderBy: {
-        class: {
-          subject: "asc",
-        },
-      },
+    return this.getStudentPerformanceOverview(studentId, actor, {
+      ...filters,
+      semester: targetSemester,
     });
-
-    if (!studentEnrollments.length) {
-      throw new Error("Student enrollment not found for the requested semester");
-    }
-
-    const latestEnrollment = studentEnrollments[0];
-    const analyticsSource = studentEnrollments.find((row) => row.classRank !== null || row.expectedCgpa !== null) || latestEnrollment;
-
-    return {
-      student: {
-        id: selectedStudent.publicId,
-        name: latestEnrollment.name,
-        regNo: latestEnrollment.regNo,
-        email: latestEnrollment.email,
-        phoneNumber: latestEnrollment.phoneNumber,
-        address: latestEnrollment.address,
-        semester: targetSemester,
-        overallRiskLevel: analyticsSource.overallRiskLevel,
-        expectedCgpa: analyticsSource.expectedCgpa,
-        classRank: analyticsSource.classRank,
-        averageScore: analyticsSource.semesterAvgScore,
-      },
-      attendanceBySubject: studentEnrollments.map((row) => ({
-        classId: row.class.publicId,
-        className: row.class.name,
-        subject: row.class.subject || row.class.name,
-        attendancePercentage: row.attendancePercentage,
-      })),
-    };
   }
 
   static async getSelfStudentDetails(actor, filters = {}) {
@@ -2193,6 +2476,13 @@ export class TeacherService {
         id: prediction.publicId,
         title: prediction.title,
         scope: prediction.scope,
+        classMetadata: {
+          programCode: prediction.programCode,
+          semesterNumber: prediction.semesterNumber,
+          section: prediction.section,
+          courseCode: prediction.courseCode,
+          courseName: prediction.courseName,
+        },
         date: prediction.generatedAt,
         status: "completed",
         studentsAnalyzed: prediction.entries.length,
@@ -2243,6 +2533,8 @@ export class TeacherService {
         subject: classDetails.subject,
         section: classDetails.section,
         semester: classDetails.semester,
+        courseCode: classDetails.courseCode,
+        courseName: classDetails.courseName,
         teacherId: classDetails.teacherId,
         createdAt: classDetails.createdAt,
         updatedAt: classDetails.updatedAt,
@@ -2470,13 +2762,18 @@ export class TeacherService {
       };
     });
 
-    return prisma.$transaction(async (tx) => {
+    const saveResult = await prisma.$transaction(async (tx) => {
       const predictionRun = await tx.predictionRun.create({
         data: {
           publicId: createId(),
           classId: teacherClass.id,
           title: predictionName,
           scope: payload.scope,
+          programCode: teacherClass.programCode,
+          semesterNumber: teacherClass.semesterNumber,
+          section: teacherClass.section,
+          courseCode: teacherClass.courseCode,
+          courseName: teacherClass.courseName,
         },
       });
 
@@ -2514,9 +2811,20 @@ export class TeacherService {
 
       return {
         prediction: {
-          ...updatedPredictionRun,
           id: updatedPredictionRun.publicId,
           reportId: updatedPredictionRun.reportCode,
+          title: updatedPredictionRun.title,
+          scope: updatedPredictionRun.scope,
+          classMetadata: {
+            programCode: updatedPredictionRun.programCode,
+            semesterNumber: updatedPredictionRun.semesterNumber,
+            section: updatedPredictionRun.section,
+            courseCode: updatedPredictionRun.courseCode,
+            courseName: updatedPredictionRun.courseName,
+          },
+          generatedAt: updatedPredictionRun.generatedAt,
+          createdAt: updatedPredictionRun.createdAt,
+          updatedAt: updatedPredictionRun.updatedAt,
         },
         count: entries.length,
         entries: entries.map((entry) => ({
@@ -2539,6 +2847,12 @@ export class TeacherService {
         })),
       };
     });
+
+    const metrics = await this.getPredictionMetrics(teacherId);
+    return {
+      ...saveResult,
+      metrics,
+    };
   }
   static async updateClassWithStudents(classId, classData, students, teacherId) {
     const teacherClass = await this.assertTeacherClass(classId, teacherId);
@@ -2566,22 +2880,38 @@ export class TeacherService {
     return prisma.$transaction(async (tx) => {
       const updateData = {};
 
+      const mergedClassData = {
+        ...teacherClass,
+        ...classData,
+      };
+      const classMetadata = await this.resolveClassMetadata(mergedClassData, tx);
+
       if (classData.name !== undefined && classData.name !== null) {
-        updateData.name = classData.name;
+        updateData.name = classMetadata.programName;
       }
       if (classData.subject !== undefined) {
-        updateData.subject = classData.subject || null;
+        updateData.subject = classMetadata.subject;
       }
       if (classData.section !== undefined) {
         updateData.section = classData.section || null;
       }
       if (classData.semester !== undefined) {
-        updateData.semester = classData.semester || null;
+        updateData.semester = classMetadata.semester;
       }
+
+      updateData.name = classMetadata.programName;
+      updateData.programCode = classMetadata.programCode;
+      updateData.programName = classMetadata.programName;
+      updateData.courseCode = classMetadata.courseCode;
+      updateData.courseName = classMetadata.courseName;
+      updateData.courseCatalogId = classMetadata.courseCatalogId;
+      updateData.semesterNumber = classMetadata.semesterNumber;
+      updateData.subject = classMetadata.subject;
+      updateData.semester = classMetadata.semester;
 
       const classUpdateResult = await tx.teacherClass.update({
         where: { id: teacherClass.id },
-        data: updateData.name || updateData.subject || updateData.section || updateData.semester ? updateData : {},
+        data: Object.keys(updateData).length ? updateData : {},
       });
 
       const existingStudents = await tx.studentRecord.findMany({
@@ -2687,10 +3017,7 @@ export class TeacherService {
       await this.ensureStudentUsersExist(createdStudentsOnly, { tx });
 
       return {
-        class: {
-          ...classUpdateResult,
-          id: classUpdateResult.publicId,
-        },
+        class: this.formatTeacherClassResponse(classUpdateResult),
         studentsDeleted: studentsToDelete.length,
         studentsAdded: upsertedStudents.filter((s) => !existingIds.has(s.id)).length,
         studentsUpdated: upsertedStudents.filter((s) => existingIds.has(s.id)).length,

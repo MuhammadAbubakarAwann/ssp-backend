@@ -2,12 +2,12 @@ import Joi from "joi";
 
 const scoreSchema = Joi.number().min(0).max(100).allow(null);
 const idSchema = Joi.alternatives().try(
-  Joi.string().trim().pattern(/^[a-z0-9]{10,}$/),
+  Joi.string().trim().pattern(/^[a-zA-Z0-9_-]{6,}$/),
   Joi.string().trim().pattern(/^\d+$/)
 ).required();
 
 const optionalIdSchema = Joi.alternatives().try(
-  Joi.string().trim().pattern(/^[a-z0-9]{10,}$/),
+  Joi.string().trim().pattern(/^[a-zA-Z0-9_-]{6,}$/),
   Joi.string().trim().pattern(/^\d+$/)
 );
 
@@ -17,10 +17,16 @@ const optionalStudentAddress = Joi.string().trim().max(500).allow(null, "");
 
 export const teacherValidation = {
   createClass: Joi.object({
-    name: Joi.string().trim().min(1).max(150).required(),
-    subject: Joi.string().trim().max(50).allow(null, ""),
+    name: Joi.string().trim().min(1).max(150).optional(),
+    programCode: Joi.string().trim().uppercase().max(20).optional(),
+    programName: Joi.string().trim().max(150).optional(),
+    courseCode: Joi.string().trim().max(50).optional(),
+    courseName: Joi.string().trim().max(150).optional(),
+    subject: Joi.string().trim().max(150).allow(null, ""),
     section: Joi.string().trim().max(50).allow(null, ""),
     semester: Joi.string().trim().max(50).allow(null, ""),
+    semesterNumber: Joi.number().integer().min(1).max(8).optional(),
+    courseCatalogId: optionalIdSchema.optional(),
   }),
 
   classIdParam: Joi.object({
@@ -92,10 +98,16 @@ export const teacherValidation = {
 
   createClassWithStudents: Joi.object({
     class: Joi.object({
-      name: Joi.string().trim().min(1).max(150).required(),
-      subject: Joi.string().trim().max(50).allow(null, ""),
+      name: Joi.string().trim().min(1).max(150).optional(),
+      programCode: Joi.string().trim().uppercase().max(20).optional(),
+      programName: Joi.string().trim().max(150).optional(),
+      courseCode: Joi.string().trim().max(50).optional(),
+      courseName: Joi.string().trim().max(150).optional(),
+      subject: Joi.string().trim().max(150).allow(null, ""),
       section: Joi.string().trim().max(50).allow(null, ""),
       semester: Joi.string().trim().max(50).allow(null, ""),
+      semesterNumber: Joi.number().integer().min(1).max(8).optional(),
+      courseCatalogId: optionalIdSchema.optional(),
     }).required(),
     students: Joi.array().items(Joi.object({
       name: Joi.string().trim().min(1).max(150).required(),
@@ -122,9 +134,15 @@ export const teacherValidation = {
   updateClassWithStudents: Joi.object({
     class: Joi.object({
       name: Joi.string().trim().min(1).max(150).optional(),
-      subject: Joi.string().trim().max(50).allow(null, "").optional(),
+      programCode: Joi.string().trim().uppercase().max(20).optional(),
+      programName: Joi.string().trim().max(150).optional(),
+      courseCode: Joi.string().trim().max(50).optional(),
+      courseName: Joi.string().trim().max(150).optional(),
+      subject: Joi.string().trim().max(150).allow(null, "").optional(),
       section: Joi.string().trim().max(50).allow(null, "").optional(),
       semester: Joi.string().trim().max(50).allow(null, "").optional(),
+      semesterNumber: Joi.number().integer().min(1).max(8).optional(),
+      courseCatalogId: optionalIdSchema.optional(),
     }).required(),
     students: Joi.array().items(Joi.object({
       id: optionalIdSchema.optional(),
@@ -171,6 +189,7 @@ export const teacherValidation = {
   predictionHistoryQuery: Joi.object({
     scope: Joi.string().trim().uppercase().valid("CLASS", "SELECTED").default("CLASS"),
     studentId: optionalIdSchema.optional(),
+    name: Joi.string().trim().max(250).optional(),
   }),
 
   predictionReportsQuery: Joi.object({
@@ -198,5 +217,14 @@ export const teacherValidation = {
 
   studentRecommendationsQuery: Joi.object({
     semester: Joi.string().trim().max(50).optional(),
+  }),
+
+  catalogSemestersQuery: Joi.object({
+    programCode: Joi.string().trim().uppercase().max(20).required(),
+  }),
+
+  catalogSubjectsQuery: Joi.object({
+    programCode: Joi.string().trim().uppercase().max(20).required(),
+    semesterNumber: Joi.number().integer().min(1).max(8).required(),
   }),
 };
