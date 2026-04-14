@@ -159,6 +159,7 @@ router.put(
 );
 router.post("/classes", validateBody(teacherValidation.createClass), TeacherController.createClass);
 router.get("/classes", TeacherController.getClasses);
+router.get("/classes/overview", TeacherController.getClassesOverview);
 router.get("/classes/names", TeacherController.getClassNames);
 router.get("/classes/names-short", TeacherController.getClassNamesShort);
 router.get(
@@ -182,6 +183,14 @@ router.get(
 router.get(
   "/predictions/metrics",
   TeacherController.getPredictionMetrics
+);
+router.get(
+  "/dashboard/metrics",
+  TeacherController.getDashboardMetrics
+);
+router.get(
+  "/performance-trend",
+  TeacherController.getPerformanceTrend
 );
 router.get(
   "/predictions/reports",

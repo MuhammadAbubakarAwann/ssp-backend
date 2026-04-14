@@ -28,9 +28,10 @@ const validateBody = (schema) => (req, res, next) => {
   return next();
 };
 
-router.post("/register", validateBody(authValidation.register), AuthController.register);
 router.post("/login", validateBody(authValidation.login), AuthController.login);
 router.post("/refresh-token", validateBody(authValidation.refreshToken), AuthController.refreshToken);
+router.post("/forgot-password", validateBody(authValidation.forgotPassword), AuthController.forgotPassword);
+router.post("/logout", validateBody(authValidation.logout), AuthController.logout);
 
 router.get("/me", authenticate, AuthController.me);
 router.get("/student-only", authenticate, authorizeRoles("STUDENT"), (_req, res) => {

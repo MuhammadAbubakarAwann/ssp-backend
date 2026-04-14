@@ -1415,6 +1415,519 @@ export class TeacherService {
     };
   }
 
+  static async getPerformanceTrend(teacherId) {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+
+    const monthStarts = [];
+    for (let offset = 6; offset >= 0; offset -= 1) {
+      monthStarts.push(new Date(currentYear, currentMonth - offset, 1));
+    }
+
+    const oldestMonthStart = monthStarts[0];
+    const nextMonthStart = new Date(currentYear, currentMonth + 1, 1);
+    const yearStart = new Date(currentYear, 0, 1);
+
+    const [trendEntries, ytdEntries] = await Promise.all([
+      prisma.predictionEntry.findMany({
+        where: {
+          predictionRun: {
+            class: {
+              teacherId,
+            },
+            generatedAt: {
+              gte: oldestMonthStart,
+              lt: nextMonthStart,
+            },
+          },
+        },
+        select: {
+          predictedScore: true,
+          modelConfidence: true,
+          predictionRun: {
+            select: {
+              generatedAt: true,
+            },
+          },
+        },
+      }),
+      prisma.predictionEntry.findMany({
+        where: {
+          predictionRun: {
+            class: {
+              teacherId,
+            },
+            generatedAt: {
+              gte: yearStart,
+              lt: nextMonthStart,
+            },
+          },
+        },
+        select: {
+          modelConfidence: true,
+        },
+      }),
+    ]);
+
+    const formatMonthKey = (date) => {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      return `${year}-${month}`;
+    };
+
+    const monthlyBuckets = new Map();
+    for (const monthStart of monthStarts) {
+      monthlyBuckets.set(formatMonthKey(monthStart), {
+        accuracies: [],
+        predictions: [],
+      });
+    }
+
+    for (const entry of trendEntries) {
+      const generatedAt = entry.predictionRun?.generatedAt;
+      if (!generatedAt) {
+        continue;
+      }
+
+      const monthKey = formatMonthKey(new Date(generatedAt));
+      const bucket = monthlyBuckets.get(monthKey);
+      if (!bucket) {
+        continue;
+      }
+
+      const confidencePercent = Number(entry.modelConfidence) * 100;
+      if (Number.isFinite(confidencePercent)) {
+        bucket.accuracies.push(confidencePercent);
+      }
+
+      const predictedScore = Number(entry.predictedScore);
+      if (Number.isFinite(predictedScore)) {
+        bucket.predictions.push(predictedScore);
+      }
+    }
+
+    let previousAccuracy = null;
+    const graph = monthStarts.map((monthStart) => {
+      const month = formatMonthKey(monthStart);
+      const bucket = monthlyBuckets.get(month) || { accuracies: [], predictions: [] };
+
+      const accuracyScore = bucket.accuracies.length
+        ? roundTo(bucket.accuracies.reduce((sum, value) => sum + value, 0) / bucket.accuracies.length)
+        : 0;
+      const predictionScore = bucket.predictions.length
+        ? roundTo(bucket.predictions.reduce((sum, value) => sum + value, 0) / bucket.predictions.length)
+        : 0;
+
+      const monthlyImprovement = previousAccuracy !== null
+        ? roundTo(percentChange(accuracyScore, previousAccuracy))
+        : 0;
+
+      previousAccuracy = accuracyScore;
+
+      return {
+        month,
+        accuracyScore,
+        predictionScore,
+        monthlyImprovement,
+      };
+    });
+
+    const peakPoint = graph.reduce(
+      (best, point) => (point.accuracyScore > best.accuracyScore ? point : best),
+      { month: graph[0]?.month || formatMonthKey(monthStarts[0]), accuracyScore: 0 }
+    );
+
+    const ytdAccuracies = ytdEntries
+      .map((entry) => Number(entry.modelConfidence) * 100)
+      .filter((value) => Number.isFinite(value));
+    const avgAccuracyYTD = ytdAccuracies.length
+      ? roundTo(ytdAccuracies.reduce((sum, value) => sum + value, 0) / ytdAccuracies.length)
+      : 0;
+
+    const previousPoint = graph.length > 1 ? graph[graph.length - 2] : null;
+    const currentPoint = graph[graph.length - 1] || null;
+    const monthlyGainPercent = previousPoint && currentPoint
+      ? roundTo(percentChange(currentPoint.accuracyScore, previousPoint.accuracyScore))
+      : 0;
+
+    const absGain = Math.abs(monthlyGainPercent);
+    let monthlyGainLevel = "LOW";
+    if (absGain > 3) {
+      monthlyGainLevel = "HIGH";
+    } else if (absGain >= 1) {
+      monthlyGainLevel = "AVERAGE";
+    }
+
+    return {
+      summary: {
+        peakModelAccuracy: {
+          value: roundTo(peakPoint.accuracyScore),
+          month: peakPoint.month,
+        },
+        avgAccuracyYTD,
+        monthlyGain: {
+          percent: monthlyGainPercent,
+          level: monthlyGainLevel,
+        },
+      },
+      graph,
+    };
+  }
+
+  static async getTeacherDashboardMetrics(teacherId) {
+    const [globalPredictions, teacherStudents, teacherClasses, teacherPredictionEntries] = await Promise.all([
+      prisma.predictionEntry.findMany({
+        select: {
+          regNo: true,
+          modelConfidence: true,
+          predictionRun: {
+            select: {
+              classId: true,
+            },
+          },
+        },
+      }),
+      prisma.studentRecord.findMany({
+        where: {
+          class: {
+            teacherId,
+          },
+        },
+        select: {
+          regNo: true,
+          semesterAvgScore: true,
+          overallRiskLevel: true,
+          updatedAt: true,
+          class: {
+            select: {
+              semester: true,
+              semesterNumber: true,
+            },
+          },
+        },
+      }),
+      prisma.teacherClass.count({
+        where: { teacherId },
+      }),
+      prisma.predictionEntry.findMany({
+        where: {
+          predictionRun: {
+            class: {
+              teacherId,
+            },
+          },
+        },
+        orderBy: [
+          { createdAt: "desc" },
+          { id: "desc" },
+        ],
+        select: {
+          regNo: true,
+          predictedScore: true,
+          riskLevel: true,
+          createdAt: true,
+          predictionRun: {
+            select: {
+              generatedAt: true,
+              classId: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const normalizedGlobalStudents = new Map();
+    const predictedClasses = new Set();
+    let confidenceSum = 0;
+
+    for (const entry of globalPredictions) {
+      const regNoKey = String(entry.regNo || "").trim().toLowerCase();
+      if (regNoKey) {
+        normalizedGlobalStudents.set(regNoKey, true);
+      }
+
+      if (entry.predictionRun?.classId) {
+        predictedClasses.add(entry.predictionRun.classId);
+      }
+
+      confidenceSum += Number(entry.modelConfidence || 0);
+    }
+
+    const predictionAccuracy = globalPredictions.length
+      ? roundTo((confidenceSum / globalPredictions.length) * 100)
+      : 0;
+
+    const teacherStudentMap = new Map();
+    for (const student of teacherStudents) {
+      const key = String(student.regNo || "").trim().toLowerCase();
+      if (key) {
+        teacherStudentMap.set(key, true);
+      }
+    }
+
+    const studentPredictions = new Map();
+    for (const entry of teacherPredictionEntries) {
+      const key = String(entry.regNo || "").trim().toLowerCase();
+      if (!key || !teacherStudentMap.has(key)) {
+        continue;
+      }
+
+      const current = studentPredictions.get(key) || [];
+      current.push(entry);
+      studentPredictions.set(key, current);
+    }
+
+    const latestStudentScores = [];
+    const improvementLatestScores = [];
+    const improvementPreviousScores = [];
+    let totalAtRisk = 0;
+
+    for (const entries of studentPredictions.values()) {
+      const latest = entries[0] || null;
+      const previous = entries[1] || null;
+
+      const latestScore = Number(latest?.predictedScore);
+      if (Number.isFinite(latestScore)) {
+        latestStudentScores.push(latestScore);
+      }
+
+      const highCount = entries.filter((entry) => String(entry.riskLevel || "").toUpperCase() === "HIGH").length;
+      const midCount = entries.filter((entry) => String(entry.riskLevel || "").toUpperCase() === "MID").length;
+      const lowCount = entries.filter((entry) => String(entry.riskLevel || "").toUpperCase() === "LOW").length;
+      if (highCount > midCount && highCount > lowCount) {
+        totalAtRisk += 1;
+      }
+
+      if (entries.length >= 2) {
+        const previousScore = Number(previous?.predictedScore);
+        if (Number.isFinite(latestScore)) {
+          improvementLatestScores.push(latestScore);
+        }
+        if (Number.isFinite(previousScore)) {
+          improvementPreviousScores.push(previousScore);
+        }
+      }
+    }
+
+    const totalStudents = teacherStudentMap.size;
+    const averagePerformance = latestStudentScores.length
+      ? roundTo(latestStudentScores.reduce((sum, value) => sum + value, 0) / latestStudentScores.length)
+      : 0;
+
+    const avgLatestImprovement = improvementLatestScores.length
+      ? improvementLatestScores.reduce((sum, value) => sum + value, 0) / improvementLatestScores.length
+      : null;
+    const avgPreviousImprovement = improvementPreviousScores.length
+      ? improvementPreviousScores.reduce((sum, value) => sum + value, 0) / improvementPreviousScores.length
+      : null;
+    const improvementRate = Number.isFinite(avgLatestImprovement) && Number.isFinite(avgPreviousImprovement)
+      ? roundTo(avgLatestImprovement - avgPreviousImprovement)
+      : 0;
+
+    return {
+      predictionMetrics: {
+        totalStudentsPredictedAtLeastOnce: normalizedGlobalStudents.size,
+        predictionAccuracy,
+        classesPredictionsDoneFor: predictedClasses.size,
+      },
+      teacherMetrics: {
+        totalStudents,
+        totalAtRisk,
+        averagePerformance,
+        improvementRate,
+        totalClassesCreatedByTeacher: teacherClasses,
+      },
+    };
+  }
+
+  static async getStudentDashboardMetrics(actor) {
+    if (!actor?.userId || String(actor.role || "").toUpperCase() !== "STUDENT") {
+      throw new Error("Forbidden: student access required");
+    }
+
+    const requester = await prisma.user.findUnique({
+      where: { id: Number(actor.userId) },
+      select: { email: true },
+    });
+
+    if (!requester?.email) {
+      throw new Error("Student account email is required");
+    }
+
+    const studentRecord = await prisma.studentRecord.findFirst({
+      where: {
+        email: {
+          equals: requester.email,
+          mode: "insensitive",
+        },
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+      select: {
+        regNo: true,
+        class: {
+          select: {
+            publicId: true,
+            name: true,
+            semester: true,
+            programCode: true,
+            semesterNumber: true,
+            section: true,
+          },
+        },
+      },
+    });
+
+    if (!studentRecord?.class) {
+      throw new Error("Student class not found");
+    }
+
+    const targetClass = studentRecord.class;
+    const classStudents = await prisma.studentRecord.findMany({
+      where: {
+        class: {
+          programCode: targetClass.programCode,
+          semesterNumber: targetClass.semesterNumber,
+          section: targetClass.section,
+        },
+      },
+      select: {
+        regNo: true,
+        semesterAvgScore: true,
+        overallRiskLevel: true,
+        updatedAt: true,
+        class: {
+          select: {
+            semester: true,
+            semesterNumber: true,
+          },
+        },
+      },
+    });
+
+    const classGroupedStudents = new Map();
+    for (const student of classStudents) {
+      const key = String(student.regNo || "").trim().toLowerCase();
+      if (!key) {
+        continue;
+      }
+
+      const current = classGroupedStudents.get(key) || [];
+      current.push(student);
+      classGroupedStudents.set(key, current);
+    }
+
+    const parseSemesterRank = (student) => {
+      const semesterNumber = Number(student.class?.semesterNumber);
+      if (Number.isFinite(semesterNumber)) {
+        return semesterNumber;
+      }
+
+      const semesterText = String(student.class?.semester || "").match(/(\d+)/);
+      return semesterText ? Number(semesterText[1]) : -1;
+    };
+
+    const studentSummaries = [];
+    for (const records of classGroupedStudents.values()) {
+      const sortedRecords = [...records].sort((a, b) => {
+        const semesterA = parseSemesterRank(a);
+        const semesterB = parseSemesterRank(b);
+        if (semesterA !== semesterB) {
+          return semesterB - semesterA;
+        }
+
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+      });
+
+      const latest = sortedRecords[0] || null;
+      const previous = sortedRecords[1] || null;
+      const latestScore = Number(latest?.semesterAvgScore);
+      const previousScore = Number(previous?.semesterAvgScore);
+      const improvement = Number.isFinite(latestScore) && Number.isFinite(previousScore)
+        ? percentChange(latestScore, previousScore)
+        : null;
+
+      studentSummaries.push({
+        latestScore: Number.isFinite(latestScore) ? latestScore : null,
+        riskLevel: String(latest?.overallRiskLevel || "").toUpperCase() || null,
+        improvement,
+      });
+    }
+
+    const totalStudents = studentSummaries.length;
+    const totalAtRisk = studentSummaries.filter((student) => ["HIGH", "MID"].includes(student.riskLevel)).length;
+    const averagePerformance = totalStudents
+      ? roundTo(studentSummaries.reduce((sum, student) => sum + Number(student.latestScore || 0), 0) / totalStudents)
+      : 0;
+    const improvementValues = studentSummaries
+      .map((student) => student.improvement)
+      .filter((value) => Number.isFinite(value));
+    const improvementRate = improvementValues.length
+      ? roundTo(improvementValues.reduce((sum, value) => sum + value, 0) / improvementValues.length)
+      : 0;
+
+    const [globalPredictions] = await Promise.all([
+      prisma.predictionEntry.findMany({
+        select: {
+          regNo: true,
+          modelConfidence: true,
+          predictionRun: {
+            select: {
+              classId: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const normalizedGlobalStudents = new Map();
+    const predictedClasses = new Set();
+    let confidenceSum = 0;
+
+    for (const entry of globalPredictions) {
+      const regNoKey = String(entry.regNo || "").trim().toLowerCase();
+      if (regNoKey) {
+        normalizedGlobalStudents.set(regNoKey, true);
+      }
+
+      if (entry.predictionRun?.classId) {
+        predictedClasses.add(entry.predictionRun.classId);
+      }
+
+      confidenceSum += Number(entry.modelConfidence || 0);
+    }
+
+    const predictionAccuracy = globalPredictions.length
+      ? roundTo((confidenceSum / globalPredictions.length) * 100)
+      : 0;
+
+    return {
+      predictionMetrics: {
+        totalStudentsPredictedAtLeastOnce: normalizedGlobalStudents.size,
+        predictionAccuracy,
+        classesPredictionsDoneFor: predictedClasses.size,
+      },
+      classMetrics: {
+        class: {
+          id: targetClass.publicId,
+          name: [targetClass.programCode, targetClass.semesterNumber, targetClass.section]
+            .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+            .join("-"),
+          programCode: targetClass.programCode,
+          semester: targetClass.semester,
+          semesterNumber: targetClass.semesterNumber,
+          section: targetClass.section,
+        },
+        totalStudents,
+        totalAtRisk,
+        averagePerformance,
+        improvementRate,
+      },
+    };
+  }
+
   static async getPredictionReports(teacherId, filters = {}) {
     const where = {
       class: {
@@ -2968,6 +3481,246 @@ export class TeacherService {
         latestPredictionAt: latestRun?.generatedAt || null,
         previousPredictionAt: previousRun?.generatedAt || null,
       },
+    };
+  }
+
+  static async getClassesOverview(teacherId) {
+    const formatClassLabel = (teacherClass) => {
+      const semesterText = String(teacherClass.semester || "").trim();
+      const sectionText = String(teacherClass.section || "").trim();
+
+      if (semesterText && sectionText) {
+        return `${semesterText} (Section ${sectionText})`;
+      }
+
+      if (semesterText) {
+        return semesterText;
+      }
+
+      return teacherClass.name || "Class";
+    };
+
+    const predictionRuns = await prisma.predictionRun.findMany({
+      where: {
+        class: {
+          teacherId,
+        },
+      },
+      orderBy: [
+        { generatedAt: "desc" },
+        { id: "desc" },
+      ],
+      include: {
+        class: {
+          select: {
+            id: true,
+            publicId: true,
+            name: true,
+            semester: true,
+            semesterNumber: true,
+            section: true,
+            _count: {
+              select: {
+                students: true,
+              },
+            },
+          },
+        },
+        entries: {
+          select: {
+            predictedScore: true,
+            riskLevel: true,
+          },
+        },
+      },
+      take: 120,
+    });
+
+    const runsByClass = new Map();
+    for (const run of predictionRuns) {
+      const classId = run.class?.id;
+      if (!classId) {
+        continue;
+      }
+
+      const existing = runsByClass.get(classId) || [];
+      existing.push(run);
+      runsByClass.set(classId, existing);
+    }
+
+    const selectedClassRuns = [];
+    for (const run of predictionRuns) {
+      const classId = run.class?.id;
+      if (!classId) {
+        continue;
+      }
+
+      if (selectedClassRuns.some((item) => item.class.id === classId)) {
+        continue;
+      }
+
+      selectedClassRuns.push(run);
+      if (selectedClassRuns.length === 3) {
+        break;
+      }
+    }
+
+    if (selectedClassRuns.length < 3) {
+      const selectedClassIds = new Set(selectedClassRuns.map((run) => run.class.id));
+      const missingClasses = await prisma.teacherClass.findMany({
+        where: {
+          teacherId,
+          id: {
+            notIn: Array.from(selectedClassIds),
+          },
+        },
+        orderBy: [
+          { updatedAt: "desc" },
+          { id: "desc" },
+        ],
+        take: 3 - selectedClassRuns.length,
+        select: {
+          id: true,
+          publicId: true,
+          name: true,
+          semester: true,
+          semesterNumber: true,
+          section: true,
+          _count: {
+            select: {
+              students: true,
+            },
+          },
+          students: {
+            select: {
+              semesterAvgScore: true,
+              overallRiskLevel: true,
+            },
+          },
+        },
+      });
+
+      for (const teacherClass of missingClasses) {
+        selectedClassRuns.push({
+          class: teacherClass,
+          entries: [],
+          generatedAt: null,
+          publicId: null,
+        });
+      }
+    }
+
+    const classes = selectedClassRuns.map((run) => {
+      const classRuns = runsByClass.get(run.class.id) || [];
+      const latest = classRuns[0] || run;
+      const previous = classRuns[1] || null;
+
+      const latestEntries = Array.isArray(latest.entries) ? latest.entries : [];
+      const latestAvg = latestEntries.length
+        ? latestEntries.reduce((sum, entry) => sum + Number(entry.predictedScore || 0), 0) / latestEntries.length
+        : null;
+      const latestAtRisk = latestEntries.length
+        ? latestEntries.filter((entry) => {
+            const risk = String(entry.riskLevel || "").toUpperCase();
+            return risk === "HIGH" || risk === "MID";
+          }).length
+        : null;
+
+      let fallbackAvg = null;
+      let fallbackAtRisk = null;
+      if (!latestEntries.length && Array.isArray(run.class?.students) && run.class.students.length) {
+        fallbackAvg = run.class.students.reduce((sum, student) => sum + Number(student.semesterAvgScore || 0), 0)
+          / run.class.students.length;
+        fallbackAtRisk = run.class.students.filter((student) => {
+          const risk = String(student.overallRiskLevel || "").toUpperCase();
+          return risk === "HIGH" || risk === "MID";
+        }).length;
+      }
+
+      const previousEntries = Array.isArray(previous?.entries) ? previous.entries : [];
+      const previousAvg = previousEntries.length
+        ? previousEntries.reduce((sum, entry) => sum + Number(entry.predictedScore || 0), 0) / previousEntries.length
+        : null;
+
+      return {
+        class: {
+          id: run.class.publicId,
+          name: formatClassLabel(run.class),
+          semester: run.class.semester,
+          semesterNumber: run.class.semesterNumber,
+          section: run.class.section,
+        },
+        studentsEnrolled: Number(run.class?._count?.students || 0),
+        avgScore: Number.isFinite(latestAvg)
+          ? roundTo(latestAvg)
+          : roundTo(fallbackAvg || 0),
+        studentsAtRisk: Number.isFinite(latestAtRisk)
+          ? latestAtRisk
+          : Number(fallbackAtRisk || 0),
+        latestPrediction: {
+          id: latest.publicId || null,
+          generatedAt: latest.generatedAt || null,
+        },
+        improvementRate: Number.isFinite(latestAvg) && Number.isFinite(previousAvg)
+          ? roundTo(percentChange(latestAvg, previousAvg))
+          : 0,
+      };
+    });
+
+    const sortedByRecentPrediction = [...classes].sort((a, b) => {
+      const timeA = a.latestPrediction.generatedAt ? new Date(a.latestPrediction.generatedAt).getTime() : 0;
+      const timeB = b.latestPrediction.generatedAt ? new Date(b.latestPrediction.generatedAt).getTime() : 0;
+      return timeB - timeA;
+    });
+
+    const recentActivity = [];
+
+    const latestPredictedClass = sortedByRecentPrediction.find((item) => item.latestPrediction.generatedAt);
+    if (latestPredictedClass) {
+      recentActivity.push({
+        type: "PREDICTION_COMPLETED",
+        title: "Prediction Completed",
+        description: `${latestPredictedClass.class.name} - ${latestPredictedClass.studentsEnrolled} students analyzed`,
+        timestamp: latestPredictedClass.latestPrediction.generatedAt,
+        timeAgo: formatRelativePredictionLabel(latestPredictedClass.latestPrediction.generatedAt),
+      });
+    }
+
+    const highestRiskClass = [...classes]
+      .sort((a, b) => b.studentsAtRisk - a.studentsAtRisk)
+      .find((item) => item.studentsAtRisk > 0);
+
+    if (highestRiskClass) {
+      recentActivity.push({
+        type: "RISK_ALERT",
+        title: `${highestRiskClass.studentsAtRisk} Students At Risk`,
+        description: `Alert: Declining performance detected in Class ${highestRiskClass.class.semesterNumber || ""}${highestRiskClass.class.section || ""}`,
+        timestamp: highestRiskClass.latestPrediction.generatedAt,
+        timeAgo: highestRiskClass.latestPrediction.generatedAt
+          ? formatRelativePredictionLabel(highestRiskClass.latestPrediction.generatedAt)
+          : "N/A",
+      });
+    }
+
+    const improvedClass = [...classes]
+      .sort((a, b) => b.improvementRate - a.improvementRate)
+      .find((item) => item.improvementRate > 0);
+
+    if (improvedClass) {
+      recentActivity.push({
+        type: "PERFORMANCE_IMPROVED",
+        title: "Performance Improved",
+        description: `Class ${improvedClass.class.semesterNumber || ""}${improvedClass.class.section || ""} showing +${roundTo(improvedClass.improvementRate)}% improvement this semester`,
+        timestamp: improvedClass.latestPrediction.generatedAt,
+        timeAgo: improvedClass.latestPrediction.generatedAt
+          ? formatRelativePredictionLabel(improvedClass.latestPrediction.generatedAt)
+          : "N/A",
+      });
+    }
+
+    return {
+      classes,
+      recentActivity,
     };
   }
 

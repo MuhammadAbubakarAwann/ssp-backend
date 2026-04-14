@@ -19,4 +19,12 @@ export const authValidation = {
   refreshToken: Joi.object({
     refreshToken: Joi.string().required(),
   }),
+
+  forgotPassword: Joi.object({
+    email: Joi.string().email().required(),
+  }),
+
+  logout: Joi.object({
+    refreshToken: Joi.string().optional(),
+  }),
 };

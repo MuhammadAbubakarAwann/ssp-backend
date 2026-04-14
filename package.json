@@ -12,7 +12,10 @@
     "prisma:push": "prisma db push",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:migrate:dev": "prisma migrate dev",
-    "prisma:migrate:status": "prisma migrate status"
+    "prisma:migrate:status": "prisma migrate status",
+    "seed:teachers": "node prisma/seed.js",
+    "seed:catalog": "node prisma/seed-catalog.js",
+    "seed:all": "npm run seed:catalog && npm run seed:teachers"
   },
   "repository": {
     "type": "git",

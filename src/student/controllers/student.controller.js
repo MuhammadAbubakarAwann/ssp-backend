@@ -1,6 +1,27 @@
 import { TeacherService } from "../../teacher/services/teacher.service.js";
 
 export class StudentController {
+  static async getMyDashboardMetrics(req, res) {
+    try {
+      const actor = {
+        userId: req.user.userId,
+        role: req.user.role,
+      };
+
+      const data = await TeacherService.getStudentDashboardMetrics(actor);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch dashboard metrics",
+      });
+    }
+  }
+
   static async getMyDetails(req, res) {
     try {
       const filters = req.validatedQuery || req.query;

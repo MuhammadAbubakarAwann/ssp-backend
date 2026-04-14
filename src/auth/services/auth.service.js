@@ -1,6 +1,7 @@
 import { prisma } from "../../config/database.js";
 import { PasswordService } from "../utils/password.js";
 import { JWTService } from "../utils/jwt.js";
+import crypto from "node:crypto";
 
 export class AuthService {
   static sanitizeUser(user) {
@@ -109,5 +110,42 @@ export class AuthService {
     }
 
     return this.sanitizeUser(user);
+  }
+
+  static async forgotPassword(email) {
+    if (!email || typeof email !== "string") {
+      throw new Error("Email is required");
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+
+    if (user) {
+      const resetToken = crypto.randomBytes(32).toString("hex");
+
+      // TODO: Send resetToken via email once email transport is wired for this project.
+      console.log(`Password reset token for ${normalizedEmail}: ${resetToken}`);
+    }
+
+    return {
+      message:
+        "If an account with that email exists, a password reset link has been sent.",
+    };
+  }
+
+  static async logout(refreshToken) {
+    if (refreshToken) {
+      try {
+        JWTService.verifyRefreshToken(refreshToken);
+      } catch (_error) {
+        // Keep logout idempotent. Client should clear local tokens regardless.
+      }
+    }
+
+    return {
+      loggedOut: true,
+    };
   }
 }

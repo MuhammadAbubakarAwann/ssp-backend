@@ -24,6 +24,13 @@ const validateQuery = (schema) => (req, res, next) => {
 };
 
 router.get(
+  "/dashboard/metrics",
+  authenticate,
+  authorizeRoles("STUDENT"),
+  StudentController.getMyDashboardMetrics
+);
+
+router.get(
   "/details",
   authenticate,
   authorizeRoles("STUDENT"),

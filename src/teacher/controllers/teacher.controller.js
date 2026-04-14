@@ -259,6 +259,40 @@ export class TeacherController {
     }
   }
 
+  static async getDashboardMetrics(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const data = await TeacherService.getTeacherDashboardMetrics(teacherId);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch dashboard metrics",
+      });
+    }
+  }
+
+  static async getPerformanceTrend(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const data = await TeacherService.getPerformanceTrend(teacherId);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch performance trend",
+      });
+    }
+  }
+
   static async getPredictionReports(req, res) {
     try {
       const teacherId = req.user.userId;
@@ -540,6 +574,23 @@ export class TeacherController {
       return res.status(400).json({
         success: false,
         message: error instanceof Error ? error.message : "Failed to fetch class performance overview",
+      });
+    }
+  }
+
+  static async getClassesOverview(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const data = await TeacherService.getClassesOverview(teacherId);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch classes overview",
       });
     }
   }
