@@ -225,32 +225,58 @@ export class TeacherService {
     const db = options.tx || prisma;
     const defaultPasswordHash = await PasswordService.hash("12345678");
 
+    const uniqueByEmail = new Map();
     for (const student of students) {
       const email = String(student.email || "").trim();
-      if (!email) {
-        continue;
-      }
-
-      const existingUser = await db.user.findUnique({
-        where: { email },
-        select: { id: true },
-      });
-
-      if (existingUser) {
-        continue;
-      }
-
-      const { firstName, lastName } = this.splitStudentName(student.name);
-      await db.user.create({
-        data: {
+      if (!email) continue;
+      const emailKey = email.toLowerCase();
+      if (!uniqueByEmail.has(emailKey)) {
+        uniqueByEmail.set(emailKey, {
           email,
+          name: student.name,
+        });
+      }
+    }
+
+    const candidates = Array.from(uniqueByEmail.values());
+    if (!candidates.length) {
+      return;
+    }
+
+    const existingUsers = await db.user.findMany({
+      where: {
+        email: {
+          in: candidates.map((student) => student.email),
+        },
+      },
+      select: {
+        email: true,
+      },
+    });
+
+    const existingEmailSet = new Set(existingUsers.map((user) => String(user.email || "").toLowerCase()));
+
+    const usersToCreate = candidates
+      .filter((student) => !existingEmailSet.has(student.email.toLowerCase()))
+      .map((student) => {
+        const { firstName, lastName } = this.splitStudentName(student.name);
+        return {
+          email: student.email,
           firstName,
           lastName,
           password: defaultPasswordHash,
           role: "STUDENT",
-        },
+        };
       });
+
+    if (!usersToCreate.length) {
+      return;
     }
+
+    await db.user.createMany({
+      data: usersToCreate,
+      skipDuplicates: true,
+    });
   }
 
   static toDummyExpectedCgpaFromScore(avgScore) {
@@ -696,7 +722,7 @@ export class TeacherService {
       return normalized;
     });
 
-    return prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const classMetadata = await this.resolveClassMetadata(classData, tx);
       const classSection = classData.section ? String(classData.section).trim() : null;
 
@@ -734,8 +760,6 @@ export class TeacherService {
         orderBy: { regNo: "asc" },
       });
 
-      await this.ensureStudentUsersExist(createdStudents, { tx });
-
       return {
         class: this.formatTeacherClassResponse(teacherClass),
         count: createdStudents.length,
@@ -744,7 +768,10 @@ export class TeacherService {
           id: student.publicId,
         })),
       };
-    });
+    }, { timeout: 15000, maxWait: 10000 });
+
+    await this.ensureStudentUsersExist(result.students);
+    return result;
   }
 
   static async assertTeacherClass(classPublicId, teacherId) {
@@ -896,6 +923,49 @@ export class TeacherService {
     });
   }
 
+  static async getClassNamesShort(teacherId) {
+    const classes = await prisma.teacherClass.findMany({
+      where: { teacherId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        publicId: true,
+        subject: true,
+        courseCode: true,
+        courseName: true,
+        section: true,
+        semester: true,
+        programCode: true,
+        semesterNumber: true,
+      },
+    });
+
+    const uniqueClasses = [];
+    const seenKeys = new Set();
+
+    for (const item of classes) {
+      const shortName = [item.programCode, item.semesterNumber, item.section]
+        .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+        .join("-");
+
+      if (!shortName || seenKeys.has(shortName)) {
+        continue;
+      }
+
+      seenKeys.add(shortName);
+      uniqueClasses.push({
+        id: item.publicId,
+        name: shortName,
+        subject: item.subject,
+        courseCode: item.courseCode,
+        courseName: item.courseName,
+        semester: item.semester,
+        section: item.section,
+      });
+    }
+
+    return uniqueClasses;
+  }
+
   static async getClassStudentsPredictionStatus(classId, teacherId) {
     const teacherClass = await this.assertTeacherClass(classId, teacherId);
 
@@ -934,9 +1004,107 @@ export class TeacherService {
     };
   }
 
+  static async getClassStudentsPredictionStatusAggregated(classId, teacherId) {
+    const teacherClass = await this.assertTeacherClass(classId, teacherId);
+
+    const groupedClasses = await prisma.teacherClass.findMany({
+      where: {
+        teacherId,
+        programCode: teacherClass.programCode,
+        semesterNumber: teacherClass.semesterNumber,
+        section: teacherClass.section,
+      },
+      select: {
+        id: true,
+        publicId: true,
+      },
+    });
+
+    const classIds = groupedClasses.map((item) => item.id);
+
+    if (!classIds.length) {
+      return {
+        class: {
+          id: teacherClass.publicId,
+          name: [teacherClass.programCode, teacherClass.semesterNumber, teacherClass.section]
+            .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+            .join("-"),
+          section: teacherClass.section,
+          semester: teacherClass.semester,
+          programCode: teacherClass.programCode,
+          semesterNumber: teacherClass.semesterNumber,
+          totalCourses: 0,
+        },
+        students: [],
+      };
+    }
+
+    const students = await prisma.studentRecord.findMany({
+      where: { classId: { in: classIds } },
+      orderBy: { regNo: "asc" },
+      select: {
+        id: true,
+        publicId: true,
+        name: true,
+        regNo: true,
+        classId: true,
+        _count: {
+          select: { predictionEntries: true },
+        },
+      },
+    });
+
+    const groupedStudents = new Map();
+    for (const student of students) {
+      const dedupeKey = String(student.regNo || "").trim().toLowerCase();
+      if (!dedupeKey) {
+        continue;
+      }
+
+      const existing = groupedStudents.get(dedupeKey);
+      if (!existing) {
+        groupedStudents.set(dedupeKey, {
+          ...student,
+          classIds: new Set([student.classId]),
+          hasPredictionHistory: student._count.predictionEntries > 0,
+        });
+        continue;
+      }
+
+      existing.classIds.add(student.classId);
+      existing.hasPredictionHistory = existing.hasPredictionHistory || (student._count.predictionEntries > 0);
+    }
+
+    const className = [teacherClass.programCode, teacherClass.semesterNumber, teacherClass.section]
+      .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+      .join("-");
+
+    const uniqueStudents = Array.from(groupedStudents.values());
+
+    return {
+      class: {
+        id: teacherClass.publicId,
+        name: className || teacherClass.name,
+        section: teacherClass.section,
+        semester: teacherClass.semester,
+        programCode: teacherClass.programCode,
+        semesterNumber: teacherClass.semesterNumber,
+        totalCourses: groupedClasses.length,
+      },
+      students: sortByRegistrationSuffix(uniqueStudents).map((student) => ({
+        id: student.publicId,
+        studentId: student.publicId,
+        studentIdInt: student.id,
+        name: student.name,
+        regNo: student.regNo,
+        enrolledCourses: student.classIds.size,
+        hasPredictionHistory: student.hasPredictionHistory,
+      })),
+    };
+  }
+
   static async getPredictionHistory(teacherId, filters) {
     const scope = String(filters.scope || "").trim().toUpperCase();
-    const requestedNameFilter = String(filters.name || "").trim();
 
     if (!["CLASS", "SELECTED"].includes(scope)) {
       throw new Error("scope must be CLASS or SELECTED");
@@ -1017,29 +1185,7 @@ export class TeacherService {
       },
     });
 
-    const formatClassCombinationName = (run) => {
-      const base = [run.programCode, run.semesterNumber, run.section]
-        .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
-        .join("-");
-      const course = [run.courseCode, run.courseName]
-        .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
-        .join(" ");
-      return [base, course].filter((v) => v).join(" ");
-    };
-
-    const normalizeFilterKey = (value) => String(value || "")
-      .trim()
-      .replace(/\s+/g, " ")
-      .toLowerCase();
-
-    const normalizedRequestedName = normalizeFilterKey(requestedNameFilter);
-    const filteredRuns = normalizedRequestedName
-      ? predictionRuns.filter((run) => normalizeFilterKey(formatClassCombinationName(run)) === normalizedRequestedName)
-      : predictionRuns;
-
     const summarizeRun = (run) => {
-      const combinationName = formatClassCombinationName(run) || run.class.name;
-
       if (scope === "SELECTED" && selectedStudent) {
         const entry = run.entries.find((item) => item.studentRecord?.publicId === selectedStudent.publicId);
 
@@ -1049,10 +1195,8 @@ export class TeacherService {
 
         return {
           id: run.publicId,
-          name: combinationName,
-          studentName: entry.studentName,
+          name: entry.studentName,
           title: run.title,
-          className: formatClassCombinationName(run),
           class: {
             id: run.class.publicId,
             name: run.class.name,
@@ -1081,9 +1225,8 @@ export class TeacherService {
 
         return {
           id: run.publicId,
-          name: combinationName,
+          name: run.title,
           title: run.title,
-          className: formatClassCombinationName(run),
           class: {
             id: run.class.publicId,
             name: run.class.name,
@@ -1111,9 +1254,8 @@ export class TeacherService {
 
       return {
         id: run.publicId,
-        name: combinationName,
+        name: run.class.name,
         title: run.title,
-        className: formatClassCombinationName(run),
         class: {
           id: run.class.publicId,
           name: run.class.name,
@@ -1135,15 +1277,15 @@ export class TeacherService {
     };
 
     const predictions = [];
-    for (let index = 0; index < filteredRuns.length && predictions.length < 6; index += 1) {
-      const currentRun = filteredRuns[index];
+    for (let index = 0; index < predictionRuns.length && predictions.length < 6; index += 1) {
+      const currentRun = predictionRuns[index];
       const currentSummary = summarizeRun(currentRun);
 
       if (!currentSummary) {
         continue;
       }
 
-      const previousRun = filteredRuns[index + 1];
+      const previousRun = predictionRuns[index + 1];
       if (previousRun) {
         const previousSummary = summarizeRun(previousRun);
 
@@ -1170,7 +1312,7 @@ export class TeacherService {
           }
         : null,
       scope,
-      totalCount: normalizedRequestedName ? filteredRuns.length : totalCount,
+      totalCount,
       count: predictions.length,
       predictions,
     };
@@ -1316,17 +1458,6 @@ export class TeacherService {
     });
 
     const reports = predictionRuns.map((run) => {
-      const combinationName = [
-        [run.programCode, run.semesterNumber, run.section]
-          .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
-          .join("-"),
-        [run.courseCode, run.courseName]
-          .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
-          .join(" "),
-      ]
-        .filter((v) => v)
-        .join(" ");
-
       const summary = run.entries.reduce(
         (acc, entry) => {
           const perf = String(entry.performance || "").toUpperCase();
@@ -1344,12 +1475,11 @@ export class TeacherService {
       const avgScore = analyzedCount ? summary.totalScore / analyzedCount : 0;
 
       return {
-        predictionId: run.publicId,
         reportCode: run.reportCode || run.publicId,
         type: run.scope,
         class: {
           id: run.class.publicId,
-          name: combinationName || run.class.name,
+          name: run.class.name,
         },
         summary: {
           high: summary.high,
@@ -1527,6 +1657,171 @@ export class TeacherService {
       ...filters,
       semester: targetSemester,
     });
+  }
+
+  static async getStudentOverallMetrics(studentId, actor, filters = {}) {
+    const studentIdentifierWhere = this.buildIdentifierWhere(studentId);
+
+    if (!actor?.userId || !actor?.role) {
+      throw new Error("Unauthorized access");
+    }
+
+    const role = String(actor.role || "").toUpperCase();
+    const userId = Number(actor.userId);
+
+    let accessWhere = null;
+
+    if (role === "TEACHER") {
+      accessWhere = {
+        ...studentIdentifierWhere,
+        class: {
+          teacherId: userId,
+        },
+      };
+    } else if (role === "ADMIN") {
+      accessWhere = {
+        ...studentIdentifierWhere,
+      };
+    } else if (role === "STUDENT") {
+      const requester = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+
+      if (!requester?.email) {
+        throw new Error("Student account email is required to access student metrics");
+      }
+
+      accessWhere = {
+        ...studentIdentifierWhere,
+        email: {
+          equals: requester.email,
+          mode: "insensitive",
+        },
+      };
+    } else {
+      throw new Error("Forbidden: unsupported role");
+    }
+
+    const selectedStudent = await prisma.studentRecord.findFirst({
+      where: accessWhere,
+      select: {
+        publicId: true,
+        name: true,
+        regNo: true,
+        email: true,
+        phoneNumber: true,
+        address: true,
+        class: {
+          select: {
+            publicId: true,
+            name: true,
+            semester: true,
+            programCode: true,
+            semesterNumber: true,
+            section: true,
+          },
+        },
+      },
+    });
+
+    if (!selectedStudent) {
+      throw new Error("Student not found in your classes");
+    }
+
+    const targetClass = selectedStudent.class;
+    const enrollments = await prisma.studentRecord.findMany({
+      where: {
+        regNo: selectedStudent.regNo,
+        ...(role === "STUDENT"
+          ? {
+              email: {
+                equals: selectedStudent.email,
+                mode: "insensitive",
+              },
+            }
+          : {}),
+        class: {
+          programCode: targetClass.programCode,
+          semesterNumber: targetClass.semesterNumber,
+          section: targetClass.section,
+        },
+      },
+      select: {
+        publicId: true,
+        email: true,
+        phoneNumber: true,
+        address: true,
+        expectedCgpa: true,
+        overallRiskLevel: true,
+        classRank: true,
+        semesterAvgScore: true,
+        attendancePercentage: true,
+      },
+    });
+
+    if (!enrollments.length) {
+      throw new Error("Student enrollment not found for the selected program, semester, and section");
+    }
+
+    const toAverage = (values) => {
+      const numericValues = values.map((value) => Number(value)).filter((value) => Number.isFinite(value));
+      if (!numericValues.length) return null;
+      return numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length;
+    };
+
+    const riskLevelToScore = (riskLevel) => {
+      const value = String(riskLevel || "").toUpperCase();
+      if (value === "LOW") return 1;
+      if (value === "MID") return 2;
+      if (value === "HIGH") return 3;
+      return null;
+    };
+
+    const scoreToRiskLevel = (score) => {
+      if (!Number.isFinite(score)) return null;
+      if (score < 1.5) return "LOW";
+      if (score < 2.5) return "MID";
+      return "HIGH";
+    };
+
+    const avgRiskScore = toAverage(enrollments.map((item) => riskLevelToScore(item.overallRiskLevel)));
+    const avgExpectedCgpa = toAverage(enrollments.map((item) => item.expectedCgpa));
+    const avgAttendance = toAverage(enrollments.map((item) => item.attendancePercentage));
+    const avgClassRank = toAverage(enrollments.map((item) => item.classRank));
+    const avgSemesterScore = toAverage(enrollments.map((item) => item.semesterAvgScore));
+
+    const className = [targetClass.programCode, targetClass.semesterNumber, targetClass.section]
+      .filter((value) => value !== null && value !== undefined && String(value).trim() !== "")
+      .join("-");
+
+    return {
+      student: {
+        id: selectedStudent.publicId,
+        name: selectedStudent.name,
+        regNo: selectedStudent.regNo,
+        email: selectedStudent.email || enrollments.find((item) => item.email)?.email || null,
+        phoneNumber: selectedStudent.phoneNumber || enrollments.find((item) => item.phoneNumber)?.phoneNumber || null,
+        address: selectedStudent.address || enrollments.find((item) => item.address)?.address || null,
+      },
+      class: {
+        id: targetClass.publicId,
+        name: className || targetClass.name,
+        programCode: targetClass.programCode,
+        semesterNumber: targetClass.semesterNumber,
+        section: targetClass.section,
+        semester: targetClass.semester,
+      },
+      metrics: {
+        riskLevel: scoreToRiskLevel(avgRiskScore),
+        riskLevelAverage: avgRiskScore !== null ? roundTo(avgRiskScore) : null,
+        expectedGpa: avgExpectedCgpa !== null ? roundTo(avgExpectedCgpa) : null,
+        attendanceAverage: avgAttendance !== null ? roundTo(avgAttendance) : null,
+        classRankAverage: avgClassRank !== null ? roundTo(avgClassRank) : null,
+        averageScore: avgSemesterScore !== null ? roundTo(avgSemesterScore) : null,
+        enrollmentsCount: enrollments.length,
+      },
+    };
   }
 
   static async getSelfStudentDetails(actor, filters = {}) {
@@ -2479,35 +2774,22 @@ export class TeacherService {
       throw new Error("Prediction not found in this class");
     }
 
-    const classMetadata = {
-      programCode: prediction.programCode || teacherClass.programCode,
-      semesterNumber: prediction.semesterNumber || teacherClass.semesterNumber,
-      section: prediction.section || teacherClass.section,
-      courseCode: prediction.courseCode || teacherClass.courseCode,
-      courseName: prediction.courseName || teacherClass.courseName,
-    };
-
-    const formattedClassName = [
-      [classMetadata.programCode, classMetadata.semesterNumber, classMetadata.section]
-        .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
-        .join("-"),
-      [classMetadata.courseCode, classMetadata.courseName]
-        .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
-        .join(" "),
-    ]
-      .filter((v) => v)
-      .join(" ");
-
     return {
       class: {
         id: teacherClass.publicId,
-        name: formattedClassName || teacherClass.name,
+        name: teacherClass.name,
       },
       prediction: {
         id: prediction.publicId,
-        title: formattedClassName || prediction.title,
+        title: prediction.title,
         scope: prediction.scope,
-        classMetadata,
+        classMetadata: {
+          programCode: prediction.programCode,
+          semesterNumber: prediction.semesterNumber,
+          section: prediction.section,
+          courseCode: prediction.courseCode,
+          courseName: prediction.courseName,
+        },
         date: prediction.generatedAt,
         status: "completed",
         studentsAnalyzed: prediction.entries.length,
@@ -2787,7 +3069,7 @@ export class TeacherService {
       };
     });
 
-    const saveResult = await prisma.$transaction(async (tx) => {
+    return prisma.$transaction(async (tx) => {
       const predictionRun = await tx.predictionRun.create({
         data: {
           publicId: createId(),
@@ -2872,12 +3154,6 @@ export class TeacherService {
         })),
       };
     });
-
-    const metrics = await this.getPredictionMetrics(teacherId);
-    return {
-      ...saveResult,
-      metrics,
-    };
   }
   static async updateClassWithStudents(classId, classData, students, teacherId) {
     const teacherClass = await this.assertTeacherClass(classId, teacherId);
@@ -2902,7 +3178,7 @@ export class TeacherService {
       };
     });
 
-    return prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const updateData = {};
 
       const mergedClassData = {
@@ -3039,7 +3315,6 @@ export class TeacherService {
       });
 
       const createdStudentsOnly = upsertedStudents.filter((s) => !existingIds.has(s.id));
-      await this.ensureStudentUsersExist(createdStudentsOnly, { tx });
 
       return {
         class: this.formatTeacherClassResponse(classUpdateResult),
@@ -3050,8 +3325,13 @@ export class TeacherService {
           ...student,
           id: student.publicId,
         })),
+        newStudents: createdStudentsOnly,
       };
-    });
+    }, { timeout: 15000, maxWait: 10000 });
+
+    await this.ensureStudentUsersExist(result.newStudents || []);
+    const { newStudents, ...response } = result;
+    return response;
   }
 
   static async upsertStudent(classId, teacherId, studentData) {

@@ -99,6 +99,23 @@ export class TeacherController {
     }
   }
 
+  static async getClassNamesShort(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const classes = await TeacherService.getClassNamesShort(teacherId);
+
+      return res.status(200).json({
+        success: true,
+        data: { classes },
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch class names",
+      });
+    }
+  }
+
   static async getCatalogPrograms(req, res) {
     try {
       const data = await TeacherService.getCatalogProgramsList();
@@ -165,6 +182,35 @@ export class TeacherController {
       }
 
       const data = await TeacherService.getClassStudentsPredictionStatus(classId, teacherId);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch class students prediction status",
+      });
+    }
+  }
+
+  static async getClassStudentsPredictionStatusAggregated(req, res) {
+    try {
+      const teacherId = req.user.userId;
+      const classId = req.params.classId;
+
+      if (classId === "0") {
+        return res.status(200).json({
+          success: true,
+          data: {
+            class: null,
+            students: [],
+          },
+        });
+      }
+
+      const data = await TeacherService.getClassStudentsPredictionStatusAggregated(classId, teacherId);
 
       return res.status(200).json({
         success: true,
@@ -311,6 +357,28 @@ export class TeacherController {
       return res.status(400).json({
         success: false,
         message: error instanceof Error ? error.message : "Failed to fetch student performance overview",
+      });
+    }
+  }
+
+  static async getStudentOverallMetrics(req, res) {
+    try {
+      const studentId = req.params.studentId;
+      const filters = req.validatedQuery || req.query;
+      const actor = {
+        userId: req.user.userId,
+        role: req.user.role,
+      };
+      const data = await TeacherService.getStudentOverallMetrics(studentId, actor, filters);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch student overall metrics",
       });
     }
   }

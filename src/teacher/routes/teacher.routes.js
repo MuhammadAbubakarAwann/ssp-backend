@@ -95,6 +95,13 @@ router.get(
   TeacherController.getStudentPerformanceOverview
 );
 router.get(
+  "/students/:studentId/overall-metrics",
+  authenticate,
+  authorizeRoles("TEACHER", "ADMIN"),
+  validateParams(teacherValidation.studentIdParam),
+  TeacherController.getStudentOverallMetrics
+);
+router.get(
   "/students/:studentId/latest-predictions",
   authenticate,
   authorizeRoles("TEACHER", "ADMIN"),
@@ -153,6 +160,7 @@ router.put(
 router.post("/classes", validateBody(teacherValidation.createClass), TeacherController.createClass);
 router.get("/classes", TeacherController.getClasses);
 router.get("/classes/names", TeacherController.getClassNames);
+router.get("/classes/names-short", TeacherController.getClassNamesShort);
 router.get(
   "/classes/:classId/performance-overview",
   validateParams(teacherValidation.classIdParam),
@@ -165,6 +173,11 @@ router.get(
   "/classes/:classId/students/prediction-status",
   validateParams(teacherValidation.classIdParam),
   TeacherController.getClassStudentsPredictionStatus
+);
+router.get(
+  "/classes/:classId/students/prediction-status-aggregated",
+  validateParams(teacherValidation.classIdParam),
+  TeacherController.getClassStudentsPredictionStatusAggregated
 );
 router.get(
   "/predictions/metrics",

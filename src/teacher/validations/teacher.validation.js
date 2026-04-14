@@ -189,7 +189,6 @@ export const teacherValidation = {
   predictionHistoryQuery: Joi.object({
     scope: Joi.string().trim().uppercase().valid("CLASS", "SELECTED").default("CLASS"),
     studentId: optionalIdSchema.optional(),
-    name: Joi.string().trim().max(250).optional(),
   }),
 
   predictionReportsQuery: Joi.object({
