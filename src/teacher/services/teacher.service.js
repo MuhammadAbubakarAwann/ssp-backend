@@ -180,6 +180,183 @@ const getTrendDirection = (latestScore, previousScore) => {
   return delta > 0 ? "UP" : "DOWN";
 };
 
+const riskLevelToLabel = (riskLevel) => {
+  const value = String(riskLevel || "").trim().toUpperCase();
+
+  if (value === "LOW") return "Low";
+  if (value === "MID") return "Medium";
+  if (value === "HIGH") return "High";
+
+  return null;
+};
+
+const performanceLabelFromScore = (score) => {
+  const value = Number(score);
+
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  if (value >= 80) return "Excellent";
+  if (value >= 65) return "Good";
+  if (value >= 50) return "Average";
+  return "Needs Improvement";
+};
+
+const performanceLabelFromPrediction = (performance, score) => {
+  const normalized = String(performance || "").trim().toUpperCase();
+
+  if (normalized === "HIGH") return "Excellent";
+  if (normalized === "AVG") return "Average";
+  if (normalized === "LOW") return "Needs Improvement";
+
+  return performanceLabelFromScore(score);
+};
+
+const inferPassProbability = (finalScore) => {
+  const score = Number(finalScore);
+
+  if (!Number.isFinite(score)) {
+    return null;
+  }
+
+  return Math.max(0, Math.min(1, score / 100));
+};
+
+const normalizeSubjectName = (record) => {
+  return String(
+    record?.class?.subject ||
+      record?.class?.courseName ||
+      record?.class?.name ||
+      "Unknown Subject"
+  ).trim();
+};
+
+const toIsoString = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
+
+const buildStudentHistoryPayload = (records, studentId) => {
+  const groups = new Map();
+
+  for (const record of records) {
+    const subject = normalizeSubjectName(record);
+    const key = subject.toLowerCase();
+    const semester = String(record.class?.semester || "").trim() || null;
+    const semesterResultDate = record.updatedAt || record.createdAt;
+    const group = groups.get(key) || {
+      subject,
+      previousPredictions: [],
+      semesterEndResults: [],
+      latestSemester: null,
+      latestSemesterAt: null,
+      updatedAt: null,
+    };
+
+    for (const entry of record.predictionEntries || []) {
+      const createdAt = entry.predictionRun?.generatedAt || entry.createdAt || record.updatedAt || record.createdAt;
+      const mappedPrediction = {
+        course_name: subject,
+        semester,
+        predictedScore: roundTo(entry.predictedScore),
+        performance: performanceLabelFromPrediction(entry.performance, entry.predictedScore),
+        passProbability: roundTo(entry.passProbability),
+        modelConfidence: roundTo(entry.modelConfidence),
+        riskLevel: riskLevelToLabel(entry.riskLevel),
+        created_at: toIsoString(createdAt),
+      };
+
+      group.previousPredictions.push(mappedPrediction);
+      group.updatedAt = group.updatedAt && new Date(group.updatedAt) > new Date(createdAt)
+        ? group.updatedAt
+        : toIsoString(createdAt);
+    }
+
+    const finalScore = record.semesterAvgScore;
+    const semesterResultIso = toIsoString(semesterResultDate);
+
+    group.semesterEndResults.push({
+      subject,
+      semester,
+      final_score: finalScore === null || finalScore === undefined ? null : roundTo(finalScore),
+      performance: performanceLabelFromScore(finalScore),
+      pass_probability: inferPassProbability(finalScore),
+      risk_level: riskLevelToLabel(record.overallRiskLevel),
+      created_at: semesterResultIso,
+    });
+
+    if (!group.latestSemesterAt || (semesterResultIso && String(semesterResultIso) > String(group.latestSemesterAt))) {
+      group.latestSemester = semester;
+      group.latestSemesterAt = semesterResultIso;
+    }
+
+    group.updatedAt = group.updatedAt && new Date(group.updatedAt) > new Date(semesterResultDate)
+      ? group.updatedAt
+      : semesterResultIso;
+
+    groups.set(key, group);
+  }
+
+  const history = Array.from(groups.values())
+    .map((group) => ({
+      subject: group.subject,
+      previous_predictions: group.previousPredictions.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || ""))),
+      semester_end_results: group.semesterEndResults.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || ""))),
+      meta: {
+        prediction_count: group.previousPredictions.length,
+        result_count: group.semesterEndResults.length,
+        latest_semester: group.latestSemester,
+        updated_at: group.updatedAt,
+      },
+    }))
+    .sort((a, b) => a.subject.localeCompare(b.subject));
+
+  const predictionCount = history.reduce((sum, item) => sum + item.meta.prediction_count, 0);
+  const resultCount = history.reduce((sum, item) => sum + item.meta.result_count, 0);
+  const latestSemester = history.reduce((latest, item) => {
+    const current = item.meta.latest_semester;
+
+    if (!current) {
+      return latest;
+    }
+
+    if (!latest) {
+      return current;
+    }
+
+    return current > latest ? current : latest;
+  }, null);
+
+  const latestUpdatedAt = history.reduce((latest, item) => {
+    if (!item.meta.updated_at) {
+      return latest;
+    }
+
+    if (!latest) {
+      return item.meta.updated_at;
+    }
+
+    return String(item.meta.updated_at) > String(latest) ? item.meta.updated_at : latest;
+  }, null);
+
+  return {
+    student_id: studentId,
+    history,
+    meta: {
+      subject_count: history.length,
+      prediction_count: predictionCount,
+      result_count: resultCount,
+      latest_semester: latestSemester,
+      updated_at: latestUpdatedAt,
+    },
+  };
+};
+
 export class TeacherService {
   static isNumericId(value) {
     return /^\d+$/.test(String(value || "").trim());
@@ -2621,6 +2798,143 @@ export class TeacherService {
     }
 
     return this.getStudentLatestPredictions(studentRecord.publicId, actor, filters);
+  }
+
+  static async getStudentHistory(studentId, actor, filters = {}) {
+    const role = String(actor?.role || "").toUpperCase();
+    const semesterFilter = String(filters.semester || "").trim();
+    const isInternalCaller = !actor?.userId || role === "INTERNAL";
+
+    let selectedStudent = null;
+
+    if (isInternalCaller) {
+      selectedStudent = await prisma.studentRecord.findFirst({
+        where: {
+          ...this.buildIdentifierWhere(studentId),
+        },
+        select: {
+          publicId: true,
+          regNo: true,
+          email: true,
+          class: {
+            select: {
+              semester: true,
+            },
+          },
+        },
+      });
+
+      if (!selectedStudent) {
+        throw new Error("Student not found");
+      }
+    } else {
+      const details = await this.getStudentDetails(studentId, actor, filters);
+
+      selectedStudent = {
+        publicId: details.student.id,
+        regNo: details.student.regNo,
+        email: details.student.email,
+        class: {
+          semester: details.student.semester,
+        },
+      };
+    }
+
+    const where = {
+      regNo: selectedStudent.regNo,
+      ...(semesterFilter
+        ? { class: { semester: semesterFilter } }
+        : {}),
+    };
+
+    if (!isInternalCaller && role === "STUDENT") {
+      where.email = {
+        equals: selectedStudent.email,
+        mode: "insensitive",
+      };
+    }
+
+    const records = await prisma.studentRecord.findMany({
+      where,
+      select: {
+        publicId: true,
+        semesterAvgScore: true,
+        overallRiskLevel: true,
+        createdAt: true,
+        updatedAt: true,
+        class: {
+          select: {
+            publicId: true,
+            name: true,
+            subject: true,
+            courseName: true,
+            semester: true,
+            courseCode: true,
+          },
+        },
+        predictionEntries: {
+          select: {
+            predictedScore: true,
+            performance: true,
+            passProbability: true,
+            modelConfidence: true,
+            riskLevel: true,
+            createdAt: true,
+            predictionRun: {
+              select: {
+                generatedAt: true,
+              },
+            },
+          },
+          orderBy: {
+            predictionRun: {
+              generatedAt: "desc",
+            },
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "asc",
+      },
+    });
+
+    return buildStudentHistoryPayload(records, selectedStudent.publicId);
+  }
+
+  static async getSelfStudentHistory(actor, filters = {}) {
+    if (!actor?.userId || String(actor.role || "").toUpperCase() !== "STUDENT") {
+      throw new Error("Forbidden: student access required");
+    }
+
+    const requester = await prisma.user.findUnique({
+      where: { id: Number(actor.userId) },
+      select: { email: true },
+    });
+
+    if (!requester?.email) {
+      throw new Error("Student account email is required to access history");
+    }
+
+    const studentRecord = await prisma.studentRecord.findFirst({
+      where: {
+        email: {
+          equals: requester.email,
+          mode: "insensitive",
+        },
+      },
+      select: {
+        publicId: true,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    });
+
+    if (!studentRecord) {
+      throw new Error("Student record not found for this account");
+    }
+
+    return this.getStudentHistory(studentRecord.publicId, actor, filters);
   }
 
   static async getStudentRecommendations(studentId, actor, filters = {}) {

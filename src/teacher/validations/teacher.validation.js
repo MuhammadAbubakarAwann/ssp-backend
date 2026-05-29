@@ -214,6 +214,10 @@ export const teacherValidation = {
     semester: Joi.string().trim().max(50).optional(),
   }),
 
+  studentHistoryQuery: Joi.object({
+    semester: Joi.string().trim().max(50).optional(),
+  }),
+
   studentRecommendationsQuery: Joi.object({
     semester: Joi.string().trim().max(50).optional(),
   }),

@@ -63,6 +63,14 @@ router.get(
 );
 
 router.get(
+  "/history",
+  authenticate,
+  authorizeRoles("STUDENT"),
+  validateQuery(teacherValidation.studentHistoryQuery),
+  StudentController.getMyHistory
+);
+
+router.get(
   "/recommendations",
   authenticate,
   authorizeRoles("STUDENT"),

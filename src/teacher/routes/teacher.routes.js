@@ -70,6 +70,28 @@ const validateParams = (schema) => (req, res, next) => {
   return next();
 };
 
+const validateInternalSecret = (req, res, next) => {
+  const expectedSecret = process.env.INTERNAL_API_SECRET;
+
+  if (!expectedSecret) {
+    return res.status(500).json({
+      success: false,
+      message: "Internal API secret is not configured",
+    });
+  }
+
+  const providedSecret = String(req.header("x-internal-secret") || "").trim();
+
+  if (!providedSecret || providedSecret !== expectedSecret) {
+    return res.status(401).json({
+      success: false,
+      message: "Unauthorized internal request",
+    });
+  }
+
+  return next();
+};
+
 router.get(
   "/students/:studentId/details",
   authenticate,
@@ -108,6 +130,21 @@ router.get(
   validateParams(teacherValidation.studentIdParam),
   validateQuery(teacherValidation.studentLatestPredictionsQuery),
   TeacherController.getStudentLatestPredictions
+);
+router.get(
+  "/students/:studentId/history",
+  authenticate,
+  authorizeRoles("TEACHER", "ADMIN"),
+  validateParams(teacherValidation.studentIdParam),
+  validateQuery(teacherValidation.studentHistoryQuery),
+  TeacherController.getStudentHistory
+);
+router.get(
+  "/internal/students/:studentId/history",
+  validateInternalSecret,
+  validateParams(teacherValidation.studentIdParam),
+  validateQuery(teacherValidation.studentHistoryQuery),
+  TeacherController.getStudentHistory
 );
 router.get(
   "/students/:studentId/recommendations",

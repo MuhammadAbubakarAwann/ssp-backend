@@ -110,6 +110,28 @@ export class StudentController {
     }
   }
 
+  static async getMyHistory(req, res) {
+    try {
+      const filters = req.validatedQuery || req.query;
+      const actor = {
+        userId: req.user.userId,
+        role: req.user.role,
+      };
+
+      const data = await TeacherService.getSelfStudentHistory(actor, filters);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch student history",
+      });
+    }
+  }
+
   static async getMyRecommendations(req, res) {
     try {
       const filters = req.validatedQuery || req.query;
