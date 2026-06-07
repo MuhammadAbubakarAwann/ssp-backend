@@ -14,6 +14,26 @@ const optionalIdSchema = Joi.alternatives().try(
 const optionalStudentEmail = Joi.string().trim().email({ tlds: { allow: false } }).allow(null, "");
 const optionalStudentPhone = Joi.string().trim().max(30).allow(null, "");
 const optionalStudentAddress = Joi.string().trim().max(500).allow(null, "");
+const flaskPredictionScore = Joi.number().min(0).max(100).required();
+const flaskPredictionStudent = Joi.object({
+  student_id: idSchema,
+  course_name: Joi.string().trim().min(1).max(150).required(),
+  semester: Joi.string().trim().min(1).max(50).required(),
+  q1: flaskPredictionScore,
+  q2: flaskPredictionScore,
+  q3: flaskPredictionScore,
+  q4: flaskPredictionScore,
+  q5: flaskPredictionScore,
+  q6: flaskPredictionScore,
+  a1: flaskPredictionScore,
+  a2: flaskPredictionScore,
+  a3: flaskPredictionScore,
+  a4: flaskPredictionScore,
+  a5: flaskPredictionScore,
+  a6: flaskPredictionScore,
+  mids: flaskPredictionScore,
+  attendance: flaskPredictionScore,
+});
 
 export const teacherValidation = {
   createClass: Joi.object({
@@ -215,6 +235,11 @@ export const teacherValidation = {
   }),
 
   studentHistoryQuery: Joi.object({
+    semester: Joi.string().trim().max(50).optional(),
+  }),
+
+  studentHistoryBulkBody: Joi.object({
+    studentIds: Joi.array().items(idSchema).min(1).required().unique(),
     semester: Joi.string().trim().max(50).optional(),
   }),
 

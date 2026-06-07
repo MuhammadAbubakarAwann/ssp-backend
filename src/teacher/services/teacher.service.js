@@ -190,6 +190,165 @@ const riskLevelToLabel = (riskLevel) => {
   return null;
 };
 
+const getFlaskPredictionApiBaseUrl = () => {
+  const configuredBaseUrl = String(process.env.FLASK_PREDICTION_API_BASE_URL || "").trim();
+
+  if (!configuredBaseUrl) {
+    return "http://127.0.0.1:5000";
+  }
+
+  return configuredBaseUrl.replace(/\/+$/, "");
+};
+
+const normalizeFlaskPerformance = (value) => {
+  const normalized = String(value || "").trim().toUpperCase();
+
+  if (["HIGH", "EXCELLENT"].includes(normalized)) {
+    return "HIGH";
+  }
+
+  if (["AVG", "AVERAGE", "GOOD", "MEDIUM"].includes(normalized)) {
+    return "AVG";
+  }
+
+  return "LOW";
+};
+
+const normalizeFlaskRiskLevel = (value) => {
+  const normalized = String(value || "").trim().toUpperCase();
+
+  if (normalized === "HIGH") {
+    return "HIGH";
+  }
+
+  if (normalized === "MID" || normalized === "MEDIUM") {
+    return "MID";
+  }
+
+  return "LOW";
+};
+
+const toFiniteNumber = (value, fallback = null) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const buildFlaskPredictionStudentPayload = (student, teacherClass) => {
+  const courseName = String(
+    student.course_name || teacherClass.courseName || teacherClass.subject || teacherClass.name || ""
+  ).trim();
+  const semester = String(student.semester || teacherClass.semester || "").trim();
+
+  if (!String(student.student_id || "").trim()) {
+    throw new Error("student_id is required for Flask prediction payload");
+  }
+
+  return {
+    student_id: String(student.student_id).trim(),
+    course_name: courseName,
+    semester,
+    q1: toFiniteNumber(student.q1 ?? student.quiz1),
+    q2: toFiniteNumber(student.q2 ?? student.quiz2),
+    q3: toFiniteNumber(student.q3 ?? student.quiz3),
+    q4: toFiniteNumber(student.q4 ?? student.quiz4),
+    q5: toFiniteNumber(student.q5 ?? student.quiz5),
+    q6: toFiniteNumber(student.q6 ?? student.quiz6),
+    a1: toFiniteNumber(student.a1 ?? student.assignment1),
+    a2: toFiniteNumber(student.a2 ?? student.assignment2),
+    a3: toFiniteNumber(student.a3 ?? student.assignment3),
+    a4: toFiniteNumber(student.a4 ?? student.assignment4),
+    a5: toFiniteNumber(student.a5 ?? student.assignment5),
+    a6: toFiniteNumber(student.a6 ?? student.assignment6),
+    mids: toFiniteNumber(student.mids ?? student.midsPercentage),
+    attendance: toFiniteNumber(student.attendance ?? student.attendancePercentage),
+  };
+};
+
+const buildFlaskSuggestionSnapshot = (prediction, generatedAt = new Date().toISOString()) => {
+  const strengths = Array.isArray(prediction?.strengths) ? prediction.strengths : [];
+  const areasForImprovement = Array.isArray(prediction?.areasForImprovement) ? prediction.areasForImprovement : [];
+  const nextSteps = Array.isArray(prediction?.nextSteps) ? prediction.nextSteps : [];
+  const suggestions = Array.isArray(prediction?.suggestions)
+    ? prediction.suggestions
+    : [...nextSteps];
+
+  return {
+    source: "FLASK_API",
+    aiSummary: prediction?.aiSummary || null,
+    strengths,
+    areasForImprovement,
+    nextSteps,
+    suggestions,
+    featureBreakdown: prediction?.featureBreakdown || null,
+    history: prediction?.history || null,
+    recommendationSnapshot: {
+      strengths,
+      areasForImprovement,
+      nextSteps,
+      source: "FLASK_API",
+      generatedAt,
+    },
+  };
+};
+
+const fetchFlaskPredictions = async (students, teacherClass) => {
+  const baseUrl = getFlaskPredictionApiBaseUrl();
+  const response = await fetch(`${baseUrl}/predict`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      students: students.map((student) => buildFlaskPredictionStudentPayload(student, teacherClass)),
+    }),
+  });
+
+  if (!response.ok) {
+    const responseText = await response.text();
+    throw new Error(`Flask prediction API failed with status ${response.status}: ${responseText}`);
+  }
+
+  const payload = await response.json();
+  if (!payload || !Array.isArray(payload.predictions)) {
+    throw new Error("Flask prediction API response is invalid");
+  }
+
+  return payload;
+};
+
+const mapFlaskPredictionResults = (flaskPayload, selectedStudents) => {
+  const studentsById = new Map(selectedStudents.map((student) => [String(student.publicId), student]));
+
+  return (flaskPayload.predictions || []).map((item, index) => {
+    const prediction = item?.prediction || {};
+    const studentId = String(item?.student_id || item?.history?.student_id || "").trim();
+    const matchedStudent = studentsById.get(studentId);
+
+    if (!matchedStudent) {
+      throw new Error(`Student not found in this class: ${studentId || index}`);
+    }
+
+    const generatedAt = new Date().toISOString();
+    return {
+      studentId: matchedStudent.publicId,
+      name: matchedStudent.name,
+      regNo: matchedStudent.regNo,
+      predictedScore: toFiniteNumber(prediction.predictedScore, 0),
+      performance: normalizeFlaskPerformance(prediction.performance),
+      passProbability: toFiniteNumber(prediction.passProbability, 0),
+      modelConfidence: toFiniteNumber(prediction.modelConfidence, 0),
+      riskLevel: normalizeFlaskRiskLevel(prediction.riskLevel),
+      suggestions: buildFlaskSuggestionSnapshot(
+        {
+          ...prediction,
+          history: item?.history || null,
+        },
+        generatedAt
+      ),
+    };
+  });
+};
+
 const performanceLabelFromScore = (score) => {
   const value = Number(score);
 
@@ -2937,6 +3096,45 @@ export class TeacherService {
     return this.getStudentHistory(studentRecord.publicId, actor, filters);
   }
 
+  static async getBulkStudentHistory(studentIds, actor, filters = {}) {
+    if (!Array.isArray(studentIds) || studentIds.length === 0) {
+      throw new Error("At least one student id is required");
+    }
+
+    const uniqueStudentIds = [...new Set(studentIds.map((value) => String(value).trim()).filter(Boolean))];
+
+    if (uniqueStudentIds.length === 0) {
+      throw new Error("At least one valid student id is required");
+    }
+
+    const results = await Promise.all(
+      uniqueStudentIds.map(async (studentId) => {
+        try {
+          const history = await this.getStudentHistory(studentId, actor, filters);
+
+          return {
+            studentId,
+            success: true,
+            data: history,
+          };
+        } catch (error) {
+          return {
+            studentId,
+            success: false,
+            message: error instanceof Error ? error.message : "Failed to fetch student history",
+          };
+        }
+      })
+    );
+
+    return {
+      total: results.length,
+      successCount: results.filter((item) => item.success).length,
+      failureCount: results.filter((item) => !item.success).length,
+      results,
+    };
+  }
+
   static async getStudentRecommendations(studentId, actor, filters = {}) {
     const details = await this.getStudentDetails(studentId, actor, filters);
     const role = String(actor.role || "").toUpperCase();
@@ -4090,15 +4288,80 @@ export class TeacherService {
       throw new Error("predictionName is required for selected-student predictions");
     }
 
-    const normalizedPredictions = (payload.predictions || []).map((entry) => this.normalizePredictionEntry(entry));
-    if (normalizedPredictions.length === 0) {
-      throw new Error("predictions must be a non-empty array");
-    }
-
     const classStudents = await prisma.studentRecord.findMany({
       where: { classId: teacherClass.id },
-      select: { id: true, publicId: true, name: true, regNo: true },
+      select: {
+        id: true,
+        publicId: true,
+        name: true,
+        regNo: true,
+        quiz1: true,
+        quiz2: true,
+        quiz3: true,
+        quiz4: true,
+        quiz5: true,
+        quiz6: true,
+        assignment1: true,
+        assignment2: true,
+        assignment3: true,
+        assignment4: true,
+        assignment5: true,
+        midsPercentage: true,
+        attendancePercentage: true,
+      },
     });
+
+    const selectedStudents = payload.scope === "SELECTED"
+      ? (() => {
+          const selectionMap = new Map();
+
+          for (const entry of payload.predictions || []) {
+            if (entry.studentId) {
+              selectionMap.set(String(entry.studentId).trim(), true);
+            }
+            if (entry.regNo) {
+              selectionMap.set(String(entry.regNo).trim().toLowerCase(), true);
+            }
+          }
+
+          const filtered = classStudents.filter((student) => {
+            return selectionMap.has(String(student.publicId).trim()) || selectionMap.has(String(student.regNo).trim().toLowerCase());
+          });
+
+          if (!filtered.length) {
+            throw new Error("No selected students matched this class");
+          }
+
+          return filtered;
+        })()
+      : classStudents;
+
+    if (!selectedStudents.length) {
+      throw new Error("No students found in this class");
+    }
+
+    const flaskRequestStudents = selectedStudents.map((student) => ({
+      student_id: student.publicId,
+      course_name: teacherClass.courseName || teacherClass.subject || teacherClass.name || "",
+      semester: teacherClass.semester || "",
+      q1: student.quiz1,
+      q2: student.quiz2,
+      q3: student.quiz3,
+      q4: student.quiz4,
+      q5: student.quiz5,
+      q6: student.quiz6,
+      a1: student.assignment1,
+      a2: student.assignment2,
+      a3: student.assignment3,
+      a4: student.assignment4,
+      a5: student.assignment5,
+      a6: null,
+      mids: student.midsPercentage,
+      attendance: student.attendancePercentage,
+    }));
+
+    const flaskPayload = await fetchFlaskPredictions(flaskRequestStudents, teacherClass);
+    const normalizedPredictions = mapFlaskPredictionResults(flaskPayload, selectedStudents);
 
     const studentsById = new Map();
     classStudents.forEach((student) => {
@@ -4184,6 +4447,7 @@ export class TeacherService {
       });
 
       return {
+        predictionApiResponse: flaskPayload,
         prediction: {
           id: updatedPredictionRun.publicId,
           reportId: updatedPredictionRun.reportCode,

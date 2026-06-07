@@ -139,6 +139,13 @@ router.get(
   validateQuery(teacherValidation.studentHistoryQuery),
   TeacherController.getStudentHistory
 );
+router.post(
+  "/students/history/bulk",
+  authenticate,
+  authorizeRoles("TEACHER", "ADMIN"),
+  validateBody(teacherValidation.studentHistoryBulkBody),
+  TeacherController.getBulkStudentHistory
+);
 router.get(
   "/internal/students/:studentId/history",
   validateInternalSecret,

@@ -40,6 +40,33 @@ const validateQuery = (schema) => (req, res, next) => {
   return next();
 };
 
+const validateBody = (schema) => (req, res, next) => {
+  const body = req.body;
+
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return res.status(400).json({
+      success: false,
+      message: "Request body must be a valid JSON object",
+    });
+  }
+
+  const { error, value } = schema.validate(body, {
+    abortEarly: false,
+    stripUnknown: true,
+  });
+
+  if (error) {
+    return res.status(400).json({
+      success: false,
+      message: "Validation failed",
+      errors: error.details.map((item) => item.message),
+    });
+  }
+
+  req.body = value;
+  return next();
+};
+
 const validateInternalSecret = (req, res, next) => {
   const expectedSecret = process.env.INTERNAL_API_SECRET;
 
@@ -68,6 +95,13 @@ router.get(
   validateParams(teacherValidation.studentIdParam),
   validateQuery(teacherValidation.studentHistoryQuery),
   TeacherController.getStudentHistory
+);
+
+router.post(
+  "/students/history/bulk",
+  validateInternalSecret,
+  validateBody(teacherValidation.studentHistoryBulkBody),
+  TeacherController.getBulkStudentHistory
 );
 
 export default router;

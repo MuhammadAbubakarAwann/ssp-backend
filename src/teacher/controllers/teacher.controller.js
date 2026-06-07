@@ -461,6 +461,28 @@ export class TeacherController {
     }
   }
 
+  static async getBulkStudentHistory(req, res) {
+    try {
+      const { studentIds, semester } = req.body;
+      const filters = req.validatedQuery || { semester };
+      const actor = {
+        userId: req.user?.userId,
+        role: req.user?.role,
+      };
+      const data = await TeacherService.getBulkStudentHistory(studentIds, actor, filters);
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch bulk student history",
+      });
+    }
+  }
+
   static async getStudentRecommendations(req, res) {
     try {
       const studentId = req.params.studentId;
