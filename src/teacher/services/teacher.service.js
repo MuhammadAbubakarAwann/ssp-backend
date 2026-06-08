@@ -243,6 +243,14 @@ const buildFlaskPredictionStudentPayload = (student, teacherClass) => {
     throw new Error("student_id is required for Flask prediction payload");
   }
 
+  if (!courseName) {
+    throw new Error(`course_name is required for Flask prediction payload (student: ${student.student_id})`);
+  }
+
+  if (!semester) {
+    throw new Error(`semester is required for Flask prediction payload (student: ${student.student_id})`);
+  }
+
   return {
     student_id: String(student.student_id).trim(),
     course_name: courseName,
@@ -258,9 +266,9 @@ const buildFlaskPredictionStudentPayload = (student, teacherClass) => {
     a3: toFiniteNumber(student.a3 ?? student.assignment3),
     a4: toFiniteNumber(student.a4 ?? student.assignment4),
     a5: toFiniteNumber(student.a5 ?? student.assignment5),
-    a6: toFiniteNumber(student.a6 ?? student.assignment6),
-    mids: toFiniteNumber(student.mids ?? student.midsPercentage),
-    attendance: toFiniteNumber(student.attendance ?? student.attendancePercentage),
+    a6: null,
+    mids: toFiniteNumber(student.mids ?? student.midsPercentage, 0),
+    attendance: toFiniteNumber(student.attendance ?? student.attendancePercentage, 0),
   };
 };
 
@@ -293,22 +301,32 @@ const buildFlaskSuggestionSnapshot = (prediction, generatedAt = new Date().toISO
 
 const fetchFlaskPredictions = async (students, teacherClass) => {
   const baseUrl = getFlaskPredictionApiBaseUrl();
+
+  const requestBody = {
+    students: students.map((student) => buildFlaskPredictionStudentPayload(student, teacherClass)),
+  };
+
   const response = await fetch(`${baseUrl}/predict`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      students: students.map((student) => buildFlaskPredictionStudentPayload(student, teacherClass)),
-    }),
+    body: JSON.stringify(requestBody),
   });
 
+  const responseText = await response.text();
+
   if (!response.ok) {
-    const responseText = await response.text();
     throw new Error(`Flask prediction API failed with status ${response.status}: ${responseText}`);
   }
 
-  const payload = await response.json();
+  let payload;
+  try {
+    payload = JSON.parse(responseText);
+  } catch {
+    throw new Error("Flask prediction API returned invalid JSON");
+  }
+
   if (!payload || !Array.isArray(payload.predictions)) {
     throw new Error("Flask prediction API response is invalid");
   }
@@ -3781,6 +3799,8 @@ export class TeacherService {
             modelConfidence: true,
             riskLevel: true,
             suggestions: true,
+            createdAt: true,
+            updatedAt: true,
             studentRecord: {
               select: {
                 publicId: true,
@@ -3823,17 +3843,19 @@ export class TeacherService {
         id: entry.publicId,
         studentId: entry.studentRecord?.publicId || null,
         name: entry.studentName,
-        registrationNum: entry.regNo,
-        predictedScore: Number(entry.predictedScore.toFixed(2)),
-        performanceCategory: entry.performance,
-        passProbability: Number(entry.passProbability.toFixed(4)),
-        modelConfidence: Number(entry.modelConfidence.toFixed(4)),
+        regNo: entry.regNo,
+        predictedScore: roundTo(entry.predictedScore),
+        performance: entry.performance,
+        passProbability: entry.passProbability,
+        modelConfidence: entry.modelConfidence,
         riskLevel: entry.riskLevel,
         expectedCgpa: entry.studentRecord?.expectedCgpa || null,
         classRank: entry.studentRecord?.classRank || null,
         overallRiskLevel: entry.studentRecord?.overallRiskLevel || null,
         semesterAvgScore: entry.studentRecord?.semesterAvgScore || null,
         suggestions: entry.suggestions,
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt,
       })),
     };
   }
@@ -4313,20 +4335,18 @@ export class TeacherService {
 
     const selectedStudents = payload.scope === "SELECTED"
       ? (() => {
-          const selectionMap = new Map();
+          const selectionIds = new Set(
+            (payload.studentIds || []).map((id) => String(id).trim())
+          );
 
-          for (const entry of payload.predictions || []) {
-            if (entry.studentId) {
-              selectionMap.set(String(entry.studentId).trim(), true);
-            }
-            if (entry.regNo) {
-              selectionMap.set(String(entry.regNo).trim().toLowerCase(), true);
-            }
+          if (!selectionIds.size) {
+            throw new Error("studentIds is required for SELECTED scope");
           }
 
-          const filtered = classStudents.filter((student) => {
-            return selectionMap.has(String(student.publicId).trim()) || selectionMap.has(String(student.regNo).trim().toLowerCase());
-          });
+          const filtered = classStudents.filter((student) =>
+            selectionIds.has(String(student.publicId).trim()) ||
+            selectionIds.has(String(student.id).trim())
+          );
 
           if (!filtered.length) {
             throw new Error("No selected students matched this class");
@@ -4342,25 +4362,51 @@ export class TeacherService {
 
     const flaskRequestStudents = selectedStudents.map((student) => ({
       student_id: student.publicId,
-      course_name: teacherClass.courseName || teacherClass.subject || teacherClass.name || "",
-      semester: teacherClass.semester || "",
-      q1: student.quiz1,
-      q2: student.quiz2,
-      q3: student.quiz3,
-      q4: student.quiz4,
-      q5: student.quiz5,
-      q6: student.quiz6,
-      a1: student.assignment1,
-      a2: student.assignment2,
-      a3: student.assignment3,
-      a4: student.assignment4,
-      a5: student.assignment5,
+      course_name: String(teacherClass.courseName || teacherClass.subject || teacherClass.name || "").trim(),
+      semester: String(teacherClass.semester || "").trim(),
+      q1: toFiniteNumber(student.quiz1),
+      q2: toFiniteNumber(student.quiz2),
+      q3: toFiniteNumber(student.quiz3),
+      q4: toFiniteNumber(student.quiz4),
+      q5: toFiniteNumber(student.quiz5),
+      q6: toFiniteNumber(student.quiz6),
+      a1: toFiniteNumber(student.assignment1),
+      a2: toFiniteNumber(student.assignment2),
+      a3: toFiniteNumber(student.assignment3),
+      a4: toFiniteNumber(student.assignment4),
+      a5: toFiniteNumber(student.assignment5),
       a6: null,
-      mids: student.midsPercentage,
-      attendance: student.attendancePercentage,
+      mids: toFiniteNumber(student.midsPercentage, 0),
+      attendance: toFiniteNumber(student.attendancePercentage, 0),
     }));
 
-    const flaskPayload = await fetchFlaskPredictions(flaskRequestStudents, teacherClass);
+    let flaskPayload;
+    try {
+      flaskPayload = await fetchFlaskPredictions(flaskRequestStudents, teacherClass);
+    } catch (flaskError) {
+      throw new Error(`Prediction service unavailable: ${flaskError instanceof Error ? flaskError.message : "Flask did not respond"}`);
+    }
+
+    const succeeded = Number(flaskPayload.succeeded ?? flaskPayload.predictions?.length ?? 0);
+    const failed = Number(flaskPayload.failed ?? 0);
+    const hasResults = Array.isArray(flaskPayload.predictions) && flaskPayload.predictions.length > 0;
+
+    if (!hasResults || succeeded === 0) {
+      const errorLines = (flaskPayload.errors || [])
+        .flatMap((e) => Array.isArray(e.errors) ? e.errors : [String(e)])
+        .slice(0, 5);
+      const detail = errorLines.length ? `: ${errorLines.join("; ")}` : "";
+      throw new Error(`Prediction failed — Flask returned no results${detail}`);
+    }
+
+    if (failed > 0) {
+      const errorLines = (flaskPayload.errors || [])
+        .flatMap((e) => Array.isArray(e.errors) ? e.errors : [String(e)])
+        .slice(0, 5);
+      const detail = errorLines.length ? `: ${errorLines.join("; ")}` : "";
+      throw new Error(`Prediction partially failed (${failed} of ${succeeded + failed} students)${detail}`);
+    }
+
     const normalizedPredictions = mapFlaskPredictionResults(flaskPayload, selectedStudents);
 
     const studentsById = new Map();

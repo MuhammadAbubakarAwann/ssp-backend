@@ -190,20 +190,16 @@ export const teacherValidation = {
   predictionSave: Joi.object({
     predictionName: Joi.string().trim().min(1).max(150).optional(),
     scope: Joi.string().valid("CLASS", "SELECTED").required(),
-    predictions: Joi.array().items(Joi.object({
-      studentId: optionalIdSchema.optional(),
-      name: Joi.string().trim().min(1).max(150).required(),
-      regNo: Joi.string().trim().min(1).max(100).required(),
-      predictedScore: Joi.number().min(0).max(100).required(),
-      performance: Joi.string().valid("LOW", "AVG", "HIGH").required(),
-      passProbability: Joi.number().min(0).max(1).required(),
-      modelConfidence: Joi.number().min(0).max(1).required(),
-      riskLevel: Joi.string().valid("LOW", "MID", "HIGH").required(),
-      suggestions: Joi.alternatives().try(
-        Joi.array().items(Joi.string().trim().min(1).max(500)).min(1),
-        Joi.string().trim().min(1).max(2000)
-      ).required(),
-    })).min(1).required(),
+    studentIds: Joi.array().items(
+      Joi.alternatives().try(
+        Joi.string().trim().pattern(/^[a-zA-Z0-9_-]{6,}$/),
+        Joi.string().trim().pattern(/^\d+$/)
+      )
+    ).min(1).when("scope", {
+      is: "SELECTED",
+      then: Joi.required(),
+      otherwise: Joi.optional(),
+    }),
   }),
 
   predictionHistoryQuery: Joi.object({
