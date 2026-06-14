@@ -3200,22 +3200,15 @@ export class TeacherService {
 
     const defaultSnapshot = {
       strengths: [
-        "Excellent Performance in AI/ML and Web Development",
-        "Consistent improvement across semesters",
-        "Good attendance rate (82%)",
+        "Personalized strengths will appear here once a new AI prediction is generated for this student.",
       ],
       areasForImprovement: [
-        "Database Systems showing declining performance",
-        "Increase practical coding practice",
-        "Focus on theory fundamentals",
+        "Personalized areas for improvement will appear here once a new AI prediction is generated for this student.",
       ],
       nextSteps: [
-        "Consider advanced AI/ML electives",
-        "Join web development projects",
-        "Schedule tutoring for Database Systems",
-        "Maintain current attendance pattern",
+        "Ask the teacher to re-run the AI prediction for this class to generate up-to-date recommendations.",
       ],
-      source: "DUMMY",
+      source: "NOT_GENERATED",
       generatedAt: new Date().toISOString(),
     };
 
@@ -3276,7 +3269,7 @@ export class TeacherService {
         strengths: snapshot.strengths || [],
         areasForImprovement: snapshot.areasForImprovement || [],
         nextSteps: snapshot.nextSteps || [],
-        source: snapshot.source || "DUMMY",
+        source: snapshot.source || "NOT_GENERATED",
         generatedAt: snapshot.generatedAt || latestEntry.predictionRun.generatedAt,
       },
     };

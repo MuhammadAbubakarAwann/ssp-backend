@@ -1,49 +1,61 @@
-# spps-backend
+# SPPS Backend
 
-Express backend project using PostgreSQL with Prisma ORM.
+Express.js REST API for the Student Performance Prediction System (SPPS). Teachers manage classes and student records, trigger AI-based performance predictions (via a separate Flask ML service), and review per-student analytics/recommendations. Students can view their own performance data.
+
+## Tech stack
+
+- Node.js (ES Modules) + Express 5
+- PostgreSQL (Supabase) via Prisma ORM (`@prisma/adapter-pg`, pgbouncer-compatible)
+- JWT auth (access + refresh tokens), bcryptjs for password hashing
+- Joi for request validation, multer + xlsx for Excel student imports
+- Flask ML service for predictions (separate process)
 
 ## Prerequisites
 
 - Node.js 18+
-- PostgreSQL running locally or remotely
+- PostgreSQL database (Supabase recommended)
+- Flask prediction service running (for prediction-related endpoints)
 
 ## Setup
 
 1. Install dependencies:
 
-```bash
-npm install
-```
+   ```bash
+   npm install
+   ```
 
-2. Create environment variables:
+2. Create a `.env` file in the project root with the following variables:
 
-```bash
-copy .env.example .env
-```
+   | Variable | Description |
+   | --- | --- |
+   | `DATABASE_URL` | Pooled Postgres connection string (used at runtime) |
+   | `DIRECT_URL` | Direct Postgres connection string (used for migrations/seeding) |
+   | `JWT_ACCESS_SECRET` | Secret for signing access tokens |
+   | `JWT_REFRESH_SECRET` | Secret for signing refresh tokens |
+   | `JWT_ACCESS_EXPIRES_IN` | Access token lifetime (default `30d`) |
+   | `JWT_REFRESH_EXPIRES_IN` | Refresh token lifetime (default `7d`) |
+   | `PORT` | HTTP port (default `5000`) |
+   | `NODE_ENV` | `development` or `production` |
+   | `FLASK_PREDICTION_API_BASE_URL` | Base URL of the Flask ML service (default `http://127.0.0.1:5000`) |
+   | `INTERNAL_API_SECRET` | Shared secret required in `x-internal-secret` header for `/api/internal/*` routes |
+   | `SEED_DEFAULT_PASSWORD` | Default password used by seed scripts (default `12345678`) |
 
-3. Update `DATABASE_URL` in `.env` with your PostgreSQL credentials.
+3. Apply the Prisma schema:
 
-4. Generate Prisma client:
+   ```bash
+   npm run prisma:generate
+   npm run prisma:migrate
+   ```
 
-```bash
-npm run prisma:generate
-```
+4. (Optional) Seed sample data:
 
-5. Fast development sync (recommended during active development):
-
-```bash
-npm run prisma:push
-```
-
-If you want versioned SQL migrations, use:
-
-```bash
-npm run prisma:migrate -- --name init
-```
+   ```bash
+   npm run seed:all
+   ```
 
 ## Run
 
-Development mode:
+Development mode (auto-reload):
 
 ```bash
 npm run dev
@@ -55,109 +67,56 @@ Production mode:
 npm start
 ```
 
-## API Endpoints
+## Project structure
 
-- `GET /` health message
-- `GET /users` list all users
-- `POST /users` create a user
-
-## Teacher APIs
-
-All teacher endpoints require:
-
-- `Authorization: Bearer <access_token>`
-- Logged-in user role: `TEACHER`
-
-Base path: ` /api/teacher `
-
-1. Create class
-
-`POST /api/teacher/classes`
-
-```json
-{
-  "name": "BSCS-6A",
-  "subject": "CS-601",
-  "section": "A",
-  "semester": "Spring 2026"
-}
+```
+src/
+  index.js              # App entry, mounts route prefixes
+  config/database.js    # Singleton Prisma client (pgbouncer adapter)
+  auth/                  # Login, refresh token, forgot password, JWT/role middleware
+  teacher/               # Teacher-facing endpoints + shared student-detail logic
+  student/               # Student self-access endpoints (mirrors teacher student-detail APIs)
+  internal/              # Machine-to-machine endpoints secured by x-internal-secret
+prisma/
+  schema.prisma          # Data model
+  seed.js                # Seeds default teacher accounts
+  seed-catalog.js        # Seeds course catalog (BSCS/BSSE programs & courses)
 ```
 
-2. List teacher classes
+## API overview
 
-`GET /api/teacher/classes`
+All authenticated routes require `Authorization: Bearer <access_token>`.
 
-3. Add one student row
+### Auth (`/api/auth`)
 
-`POST /api/teacher/classes/:classId/students`
+| Method | Path | Description |
+| --- | --- | --- |
+| POST | `/login` | Authenticate, returns access + refresh tokens |
+| POST | `/refresh-token` | Exchange a refresh token for a new access token |
+| POST | `/forgot-password` | Request a password reset token |
+| POST | `/logout` | Invalidate a refresh token |
+| GET | `/me` | Get the authenticated user's profile |
 
-```json
-{
-  "name": "Ali Raza",
-  "regNo": "SP23-BCS-001",
-  "quiz1": 10,
-  "quiz2": 9,
-  "quiz3": 8,
-  "quiz4": 10,
-  "quiz5": 9,
-  "quiz6": 8,
-  "assignment1": 9,
-  "assignment2": 8,
-  "assignment3": 10,
-  "assignment4": 9,
-  "assignment5": 10,
-  "midsPercentage": 82,
-  "attendancePercentage": 91
-}
-```
+### Teacher (`/api/teacher`) — TEACHER/ADMIN
 
-4. Add many students from JSON
+- **Catalog**: `GET /catalog/programs`, `/catalog/class-names`, `/catalog/semesters`, `/catalog/subjects`
+- **Classes**: create/list/update/delete classes, `GET /classes/overview`, `/classes/names`, `/classes/names-short`, `/classes/:classId`, `/classes/:classId/performance-overview`
+- **Students**: add single/bulk students, upload Excel (`/classes/:classId/students/upload-excel`), list students per class, prediction status per class
+- **Student detail** (also exposed under `/api/student` for self-access): `details`, `subject-performance`, `performance-overview`, `overall-metrics`, `latest-predictions`, `history`, `recommendations`, `predictions`
+- **Predictions**: `POST /classes/:classId/predictions` (triggers Flask prediction run and saves results), `GET /predictions/history`, `/predictions/reports`, `/predictions/metrics`, `/classes/:classId/predictions/:predictionId`
+- **Dashboard**: `GET /dashboard/metrics`, `/performance-trend`
 
-`POST /api/teacher/classes/:classId/students/bulk`
+### Student (`/api/student`) — STUDENT only
 
-```json
-{
-  "students": [
-    {
-      "name": "Ali Raza",
-      "regNo": "SP23-BCS-001",
-      "quiz1": 10,
-      "assignment1": 9,
-      "midsPercentage": 82,
-      "attendancePercentage": 91
-    },
-    {
-      "name": "Sara Khan",
-      "regNo": "SP23-BCS-002",
-      "quiz1": 8,
-      "assignment1": 10,
-      "midsPercentage": 88,
-      "attendancePercentage": 94
-    }
-  ]
-}
-```
+Self-access mirrors of the teacher student-detail endpoints: `dashboard/metrics`, `details`, `subject-performance`, `performance-overview`, `latest-predictions`, `history`, `recommendations`.
 
-5. Upload Excel
+### Internal (`/api/internal` and `/api/v1/internal`)
 
-`POST /api/teacher/classes/:classId/students/upload-excel`
+Secured via `x-internal-secret` header (no JWT):
 
-- Content type: `multipart/form-data`
-- File field name: `file`
-- First sheet is read
-- Row 1 must contain these headers exactly:
+- `GET /students/:studentId/history`
+- `POST /students/history/bulk`
 
-`Name`, `Reg-No`, `quiz 1`, `quiz 2`, `quiz 3`, `quiz 4`, `quiz 5`, `quiz 6`, `assignment 1`, `assignment 2`, `assignment 3`, `assignment 4`, `assignment 5`, `Mids percentage`, `attendance percentage`
+## Flask prediction integration
 
-6. List students of a class
-
-`GET /api/teacher/classes/:classId/students`
-
-Example request body for `POST /users`:
-
-```json
-{
-  "email": "user@example.com",
-  "name": "Muhammad"
-}
-```
+When a teacher triggers a prediction run, the backend posts student records to `POST {FLASK_PREDICTION_API_BASE_URL}/predict`, stores the results as a `PredictionRun` with per-student `PredictionEntry` rows, and refreshes each student's semester analytics (average score, class rank, risk level, expected CGPA).
