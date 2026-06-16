@@ -34,6 +34,9 @@ router.post("/forgot-password", validateBody(authValidation.forgotPassword), Aut
 router.post("/logout", validateBody(authValidation.logout), AuthController.logout);
 
 router.get("/me", authenticate, AuthController.me);
+router.get("/profile", authenticate, AuthController.getProfile);
+router.patch("/profile", authenticate, validateBody(authValidation.updateProfile), AuthController.updateProfile);
+router.patch("/change-password", authenticate, validateBody(authValidation.changePassword), AuthController.changePassword);
 router.get("/student-only", authenticate, authorizeRoles("STUDENT"), (_req, res) => {
   return res.status(200).json({ success: true, message: "Student route access granted" });
 });

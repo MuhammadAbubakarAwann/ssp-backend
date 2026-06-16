@@ -112,6 +112,132 @@ export class AuthService {
     return this.sanitizeUser(user);
   }
 
+  static async getMyProfile(userId) {
+    const user = await prisma.user.findUnique({
+      where: { id: Number(userId) },
+    });
+
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    const profile = {
+      id: user.publicId,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      name: `${user.firstName} ${user.lastName}`.trim(),
+      role: user.role,
+      createdAt: user.createdAt,
+      regNo: null,
+      phoneNumber: null,
+      address: null,
+    };
+
+    if (user.role === "STUDENT") {
+      const studentRecord = await prisma.studentRecord.findFirst({
+        where: {
+          email: {
+            equals: user.email,
+            mode: "insensitive",
+          },
+        },
+        select: {
+          regNo: true,
+          phoneNumber: true,
+          address: true,
+        },
+        orderBy: {
+          updatedAt: "desc",
+        },
+      });
+
+      if (studentRecord) {
+        profile.regNo = studentRecord.regNo;
+        profile.phoneNumber = studentRecord.phoneNumber;
+        profile.address = studentRecord.address;
+      }
+    }
+
+    return profile;
+  }
+
+  static async updateMyProfile(userId, data) {
+    const user = await prisma.user.findUnique({
+      where: { id: Number(userId) },
+    });
+
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    const { firstName, lastName, phoneNumber, address } = data || {};
+
+    const userUpdateData = {};
+    if (firstName !== undefined) userUpdateData.firstName = firstName;
+    if (lastName !== undefined) userUpdateData.lastName = lastName;
+
+    if (Object.keys(userUpdateData).length > 0) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: userUpdateData,
+      });
+    }
+
+    const wantsContactUpdate = phoneNumber !== undefined || address !== undefined;
+
+    if (wantsContactUpdate) {
+      if (user.role !== "STUDENT") {
+        throw new Error("Phone number and address can only be updated for student accounts");
+      }
+
+      const studentUpdateData = {};
+      if (phoneNumber !== undefined) studentUpdateData.phoneNumber = phoneNumber || null;
+      if (address !== undefined) studentUpdateData.address = address || null;
+
+      await prisma.studentRecord.updateMany({
+        where: {
+          email: {
+            equals: user.email,
+            mode: "insensitive",
+          },
+        },
+        data: studentUpdateData,
+      });
+    }
+
+    return this.getMyProfile(user.id);
+  }
+
+  static async changePassword(userId, currentPassword, newPassword) {
+    const user = await prisma.user.findUnique({
+      where: { id: Number(userId) },
+    });
+
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    const isCurrentPasswordValid = await PasswordService.compare(currentPassword, user.password);
+    if (!isCurrentPasswordValid) {
+      throw new Error("Current password is incorrect");
+    }
+
+    const isSamePassword = await PasswordService.compare(newPassword, user.password);
+    if (isSamePassword) {
+      throw new Error("New password must be different from the current password");
+    }
+
+    const passwordHash = await PasswordService.hash(newPassword);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { password: passwordHash },
+    });
+
+    return { message: "Password changed successfully" };
+  }
+
   static async forgotPassword(email) {
     if (!email || typeof email !== "string") {
       throw new Error("Email is required");

@@ -27,4 +27,16 @@ export const authValidation = {
   logout: Joi.object({
     refreshToken: Joi.string().optional(),
   }),
+
+  updateProfile: Joi.object({
+    firstName: Joi.string().trim().min(2).max(50),
+    lastName: Joi.string().trim().min(2).max(50),
+    phoneNumber: Joi.string().trim().max(30).allow(null, ""),
+    address: Joi.string().trim().max(500).allow(null, ""),
+  }).min(1),
+
+  changePassword: Joi.object({
+    currentPassword: Joi.string().required(),
+    newPassword: Joi.string().min(8).required(),
+  }),
 };

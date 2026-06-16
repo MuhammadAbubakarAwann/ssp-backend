@@ -72,6 +72,53 @@ export class AuthController {
     }
   }
 
+  static async getProfile(req, res) {
+    try {
+      const profile = await AuthService.getMyProfile(req.user.userId);
+      return res.status(200).json({
+        success: true,
+        data: profile,
+      });
+    } catch (error) {
+      return res.status(404).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to fetch profile",
+      });
+    }
+  }
+
+  static async updateProfile(req, res) {
+    try {
+      const profile = await AuthService.updateMyProfile(req.user.userId, req.body);
+      return res.status(200).json({
+        success: true,
+        message: "Profile updated successfully",
+        data: profile,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to update profile",
+      });
+    }
+  }
+
+  static async changePassword(req, res) {
+    try {
+      const { currentPassword, newPassword } = req.body;
+      const result = await AuthService.changePassword(req.user.userId, currentPassword, newPassword);
+      return res.status(200).json({
+        success: true,
+        message: result.message,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to change password",
+      });
+    }
+  }
+
   static async forgotPassword(req, res) {
     try {
       const { email } = req.body;

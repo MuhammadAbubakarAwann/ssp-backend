@@ -2342,6 +2342,7 @@ export class TeacherService {
       const avgScore = analyzedCount ? summary.totalScore / analyzedCount : 0;
 
       return {
+        predictionId: run.publicId,
         reportCode: run.reportCode || run.publicId,
         type: run.scope,
         class: {
